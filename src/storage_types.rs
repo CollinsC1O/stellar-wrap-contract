@@ -21,4 +21,6 @@ pub enum DataKey {
     Wrap(Address, u64),
     /// Stores the total number of wraps for a specific user (for balance_of)
     WrapCount(Address),
+    /// Tracks the latest (highest) period minted for a user
+    LatestPeriod(Address),
 }

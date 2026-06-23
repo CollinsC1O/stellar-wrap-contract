@@ -108,6 +108,16 @@ impl StellarWrapContract {
             .persistent()
             .extend_ttl(&count_key, ttl_one_year, ttl_one_year);
 
+        // 6b. Track latest period for get_latest_wrap
+        let latest_key = DataKey::LatestPeriod(user.clone());
+        let current_latest: u64 = e.storage().persistent().get(&latest_key).unwrap_or(0);
+        if period > current_latest {
+            e.storage().persistent().set(&latest_key, &period);
+            e.storage()
+                .persistent()
+                .extend_ttl(&latest_key, ttl_one_year, ttl_one_year);
+        }
+
         // 7. Emit Event
         e.events()
             .publish((symbol_short!("mint"), user, period), archetype);
@@ -127,6 +137,23 @@ impl StellarWrapContract {
             .persistent()
             .get::<_, u32>(&count_key)
             .unwrap_or(0) as i128
+    }
+
+    pub fn verify_data(e: Env, user: Address, period: u64, data: Bytes) -> bool {
+        let wrap: Option<WrapRecord> = e.storage().persistent().get(&DataKey::Wrap(user, period));
+        match wrap {
+            Some(record) => {
+                let computed_hash = e.crypto().sha256(&data);
+                record.data_hash == BytesN::from_array(&e, &computed_hash.to_array())
+            }
+            None => false,
+        }
+    }
+
+    pub fn get_latest_wrap(e: Env, user: Address) -> Option<WrapRecord> {
+        let latest_key = DataKey::LatestPeriod(user.clone());
+        let period: u64 = e.storage().persistent().get(&latest_key)?;
+        e.storage().persistent().get(&DataKey::Wrap(user, period))
     }
 
     pub fn get_admin(e: Env) -> Option<Address> {
