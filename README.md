@@ -158,6 +158,14 @@ sequenceDiagram
 
 ---
 
+## 🔒 Mint Guard Storage Decision
+
+The mint reentrancy guard uses Soroban temporary storage, not persistent storage.
+
+- Temporary storage is cheaper and matches the guard lifecycle (single invocation scope).
+- On successful mint, the guard key is removed explicitly.
+- On failure paths (panic), the temporary entry is not persisted forever and is naturally cleaned up by Soroban TTL.
+
 ## 📝 Contract Interface
 
 ### Functions

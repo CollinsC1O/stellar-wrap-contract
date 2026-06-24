@@ -68,6 +68,14 @@ impl StellarWrapContract {
         // 1. Security: Ensure the user actually signed this transaction
         user.require_auth();
 
+        // 1b. Reentrancy guard in temporary storage.
+        // If execution panics, the temporary TTL naturally clears stale entries.
+        let guard_key = DataKey::MintGuard(user.clone());
+        if e.storage().temporary().has(&guard_key) {
+            panic_with_error!(e, ContractError::Unauthorized);
+        }
+        e.storage().temporary().set(&guard_key, &true);
+
         // 2. Verify initialization
         let admin_pubkey: BytesN<32> = e
             .storage()
@@ -126,6 +134,9 @@ impl StellarWrapContract {
                 .persistent()
                 .extend_ttl(&latest_key, ttl_one_year, ttl_one_year);
         }
+
+        // Clear guard on successful completion.
+        e.storage().temporary().remove(&guard_key);
 
         // 7. Emit Event
         e.events()
