@@ -8,6 +8,14 @@ use soroban_sdk::{
 mod storage_types;
 use storage_types::{DataKey, WrapRecord};
 
+soroban_sdk::contractmeta!(
+    key = "Description",
+    val = "Soulbound token registry for Stellar Wrap"
+);
+soroban_sdk::contractmeta!(key = "Version", val = "0.1.0");
+soroban_sdk::contractmeta!(key = "Name", val = "Stellar Wrap Registry");
+soroban_sdk::contractmeta!(key = "Author", val = "Stellar Wrap Team");
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
