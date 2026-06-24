@@ -130,6 +130,34 @@ sequenceDiagram
 - ✅ Event emission for minting actions
 - ✅ Prevention of duplicate wraps per user
 
+---
+
+## 📊 Design Decision: On-Chain `WrapCount` and `balance_of`
+
+**Issue [#40](https://github.com/zintarh/stellar-wrap-contract/issues/40) — Considered removing `WrapCount` storage**
+
+### The trade-off
+
+`WrapCount` is a persistent storage entry incremented on every `mint_wrap` call. This means every mint performs two persistent storage writes (the `WrapRecord` and the `WrapCount`). Since mints also emit events, the count *could* be derived off-chain by indexing those events.
+
+### Decision: **Keep `WrapCount` and `balance_of`**
+
+**Rationale:**
+
+1. **On-chain composability.** `balance_of(user)` allows other Soroban contracts to read a user's wrap count in a single storage read. Removing it would make composability with future on-chain logic impossible without an expensive storage scan.
+2. **Predictable cost.** One extra persistent write per mint is a fixed, bounded cost. Lazy counting via storage iteration would be unbounded and far more expensive at query time.
+3. **Off-chain indexing is unreliable as a source of truth.** Events are not stored in contract state; an indexer can miss events or be unavailable. On-chain state is the canonical source of truth.
+
+**Alternatives considered and rejected:**
+
+| Option | Why rejected |
+|---|---|
+| Remove `WrapCount`, derive from events | Breaks on-chain composability; indexer dependency |
+| Lazy count (iterate storage) | O(n) cost per query; prohibitively expensive at scale |
+| Keep as-is | ✅ **Selected** — fixed cost, composable, canonical |
+
+---
+
 ## 📝 Contract Interface
 
 ### Functions
