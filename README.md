@@ -171,3 +171,13 @@ sequenceDiagram
 - `WrapRecord`: Contains `timestamp`, `data_hash`, and `archetype`
 - `DataKey::Admin`: Stores the admin address
 - `DataKey::Wrap(Address)`: Maps user addresses to their wrap records
+
+### Error Codes
+
+| Code | Error |
+| --- | --- |
+| 1 | `AlreadyInitialized` |
+| 2 | `NotInitialized` |
+| 3 | `Unauthorized` |
+| 4 | `WrapAlreadyExists` |
+| 5 | `InvalidSignature` |
