@@ -1,4 +1,6 @@
 #![cfg(test)]
+extern crate std;
+
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::{
@@ -7,6 +9,7 @@ use soroban_sdk::{
     xdr::ToXdr,
     Address, Bytes, BytesN, Env, String, Symbol, TryIntoVal,
 };
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::storage_types::{DataKey, WrapRecord};
 
@@ -834,4 +837,86 @@ fn test_revoke_requires_admin_auth() {
 
     // No auth mocking: admin.require_auth() must fail.
     client.revoke_wrap(&user, &2026);
+}
+
+// ─── Issue #82: temporary mint guard tests ─────────────────────────────────
+
+#[test]
+fn test_mint_guard_uses_temporary_storage_and_clears_on_success() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[13u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let period = 2026u64;
+    let archetype = symbol_short!("arch");
+    let data_hash = BytesN::from_array(&env, &[13u8; 32]);
+    let signature = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &data_hash,
+    );
+
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &signature);
+
+    let guard_key = DataKey::MintGuard(user.clone());
+    env.as_contract(&contract_id, || {
+        assert!(!env.storage().temporary().has(&guard_key));
+        assert!(!env.storage().persistent().has(&guard_key));
+    });
+}
+
+#[test]
+fn test_mint_guard_on_failure_leaves_no_residual_state() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[14u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let period = 2026u64;
+    let archetype = symbol_short!("arch");
+    let data_hash = BytesN::from_array(&env, &[14u8; 32]);
+    let signature = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &data_hash,
+    );
+
+    // First mint succeeds.
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &signature);
+
+    // Second mint panics (duplicate).
+    let duplicate = catch_unwind(AssertUnwindSafe(|| {
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &signature)
+    }));
+    assert!(duplicate.is_err());
+
+    let guard_key = DataKey::MintGuard(user.clone());
+    env.as_contract(&contract_id, || {
+        // Failed invocations revert, so no leftover guard entry remains.
+        assert!(!env.storage().temporary().has(&guard_key));
+        assert!(!env.storage().persistent().has(&guard_key));
+    });
 }

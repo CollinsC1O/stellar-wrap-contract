@@ -23,4 +23,6 @@ pub enum DataKey {
     WrapCount(Address),
     /// Tracks the latest (highest) period minted for a user
     LatestPeriod(Address),
+    /// Temporary, invocation-scoped reentrancy guard for mint flow
+    MintGuard(Address),
 }
