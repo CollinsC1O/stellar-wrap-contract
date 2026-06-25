@@ -430,16 +430,16 @@ fn test_gas_analysis_multiple_mints() {
     env.budget().reset_default();
 
     // Perform 5 mints for different periods
-    for i in 0..5 {
+    for i in 1..6 {
         let data_hash = BytesN::from_array(&env, &[i as u8; 32]);
         let archetype = symbol_short!("architect");
 
         // Create unique period values
         let period = match i {
-            0 => 202512u64, // December 2025
-            1 => 202601u64, // January 2026
-            2 => 202602u64, // February 2026
-            3 => 202603u64, // March 2026
+            1 => 202512u64, // December 2025
+            2 => 202601u64, // January 2026
+            3 => 202602u64, // February 2026
+            4 => 202603u64, // March 2026
             _ => 202604u64, // April 2026
         };
 

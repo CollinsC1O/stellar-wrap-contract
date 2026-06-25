@@ -130,7 +130,7 @@ fn test_balance_of_and_count() {
     env.mock_all_auths();
 
     let archetype = symbol_short!("soroban");
-    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let hash = BytesN::from_array(&env, &[1u8; 32]);
 
     let sig1 = sign_payload(
         &env,
