@@ -25,4 +25,6 @@ pub enum DataKey {
     LatestPeriod(Address),
     /// Temporary, invocation-scoped reentrancy guard for mint flow
     MintGuard(Address),
+    /// Tracks the total number of wraps minted across all users
+    TotalSupply,
 }

@@ -1096,3 +1096,69 @@ fn test_upgrade_requires_admin_auth() {
     let fake_wasm = BytesN::from_array(&env, &[0u8; 32]);
     client.upgrade(&fake_wasm);
 }
+
+// ─── Issue #37: total_supply tests ──────────────────────────────────────────
+
+#[test]
+fn test_total_supply_starts_at_zero() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let pubkey = BytesN::from_array(&env, &[1u8; 32]);
+    client.initialize(&admin, &pubkey);
+    assert_eq!(client.total_supply(), 0);
+}
+
+#[test]
+fn test_total_supply_increments_on_mint() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[60u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let archetype = symbol_short!("arch");
+    let hash1 = BytesN::from_array(&env, &[61u8; 32]);
+    let hash2 = BytesN::from_array(&env, &[62u8; 32]);
+
+    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user1, 2025, &archetype, &hash1);
+    client.mint_wrap(&user1, &2025, &archetype, &hash1, &sig1);
+    assert_eq!(client.total_supply(), 1);
+
+    let sig2 = sign_payload(&env, &signing_key, &contract_id, &user2, 2025, &archetype, &hash2);
+    client.mint_wrap(&user2, &2025, &archetype, &hash2, &sig2);
+    assert_eq!(client.total_supply(), 2);
+}
+
+#[test]
+fn test_total_supply_decrements_on_revoke() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[63u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let archetype = symbol_short!("arch");
+    let hash = BytesN::from_array(&env, &[63u8; 32]);
+    let sig = sign_payload(&env, &signing_key, &contract_id, &user, 2025, &archetype, &hash);
+
+    client.mint_wrap(&user, &2025, &archetype, &hash, &sig);
+    assert_eq!(client.total_supply(), 1);
+
+    client.revoke_wrap(&user, &2025);
+    assert_eq!(client.total_supply(), 0);
+}

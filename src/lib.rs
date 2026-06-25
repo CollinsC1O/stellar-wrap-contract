@@ -189,6 +189,16 @@ impl StellarWrapContract {
             .persistent()
             .extend_ttl(&count_key, ttl_one_year, ttl_one_year);
 
+        // 7c. Increment global TotalSupply
+        let total: u64 = e
+            .storage()
+            .instance()
+            .get(&DataKey::TotalSupply)
+            .unwrap_or(0);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalSupply, &(total + 1));
+
         // 7b. Track latest period for get_latest_wrap
         let latest_key = DataKey::LatestPeriod(user.clone());
         let current_latest: u64 = e.storage().persistent().get(&latest_key).unwrap_or(0);
@@ -231,6 +241,18 @@ impl StellarWrapContract {
                 .set(&count_key, &(current_count - 1));
         }
 
+        // Decrement global TotalSupply
+        let total: u64 = e
+            .storage()
+            .instance()
+            .get(&DataKey::TotalSupply)
+            .unwrap_or(0);
+        if total > 0 {
+            e.storage()
+                .instance()
+                .set(&DataKey::TotalSupply, &(total - 1));
+        }
+
         e.events()
             .publish((symbol_short!("revoke"), user, period), true);
     }
@@ -263,6 +285,14 @@ impl StellarWrapContract {
             .persistent()
             .get::<_, u32>(&count_key)
             .unwrap_or(0) as i128
+    }
+
+    /// Return the total number of wraps minted across all users.
+    pub fn total_supply(e: Env) -> u64 {
+        e.storage()
+            .instance()
+            .get(&DataKey::TotalSupply)
+            .unwrap_or(0)
     }
 
     /// Verify that the SHA-256 hash of `data` matches the `data_hash` stored in a wrap record.
