@@ -7,7 +7,7 @@ use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events},
     xdr::ToXdr,
-    Address, Bytes, BytesN, Env, String, Symbol, TryIntoVal,
+    Address, Bytes, BytesN, Env, IntoVal, String, Symbol, TryIntoVal,
 };
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -951,4 +951,51 @@ fn test_update_admin_emits_event() {
     let (old_admin_val, new_admin_val): (Address, Address) = data.try_into_val(&env).unwrap();
     assert_eq!(old_admin_val, admin);
     assert_eq!(new_admin_val, new_admin);
+}
+
+// ─── Issue #34: update_admin authorization failure tests ────────────────────
+
+#[test]
+#[should_panic]
+fn test_update_admin_unauthorized_fails() {
+    // No mock_all_auths — auth requirement is not satisfied, should panic
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let pubkey = BytesN::from_array(&env, &[1u8; 32]);
+
+    client.initialize(&admin, &pubkey);
+    client.update_admin(&new_admin);
+}
+
+#[test]
+#[should_panic]
+fn test_update_admin_by_non_admin_fails() {
+    // A different address tries to call update_admin — should panic
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let pubkey = BytesN::from_array(&env, &[1u8; 32]);
+
+    client.initialize(&admin, &pubkey);
+
+    // Only mock auth for non_admin — current_admin.require_auth() will fail
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &non_admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "update_admin",
+            args: (&new_admin,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    client.update_admin(&new_admin);
 }
