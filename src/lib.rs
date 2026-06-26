@@ -6,7 +6,7 @@ use soroban_sdk::{
 };
 
 mod storage_types;
-use storage_types::{DataKey, WrapRecord};
+use storage_types::{ContractInfo, DataKey, WrapRecord};
 
 soroban_sdk::contractmeta!(
     key = "Description",
@@ -268,6 +268,85 @@ impl StellarWrapContract {
             .publish((symbol_short!("mint"), user, period), archetype);
     }
 
+    /// Update an existing wrap record's data_hash and archetype (admin-only).
+    ///
+    /// The original `timestamp` is preserved. A new `update` event is emitted.
+    ///
+    /// # Parameters
+    /// - `user`: The address whose wrap record is being updated.
+    /// - `period`: The period identifier of the record to update.
+    /// - `new_data_hash`: Replacement SHA-256 hash. Must not be all-zero bytes.
+    /// - `new_archetype`: Replacement archetype symbol.
+    /// - `signature`: 64-byte Ed25519 signature from the admin over the new payload.
+    ///
+    /// # Authorization
+    /// Requires authorization from the **admin**.
+    ///
+    /// # Panics
+    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
+    /// - [`ContractError::Unauthorized`] if the caller is not the admin.
+    /// - [`ContractError::InvalidDataHash`] if `new_data_hash` is all-zero bytes.
+    /// - [`ContractError::InvalidSignature`] if the Ed25519 signature is invalid.
+    /// - [`ContractError::WrapNotFound`] if no wrap exists for `(user, period)`.
+    pub fn update_wrap(
+        e: Env,
+        user: Address,
+        period: u64,
+        new_data_hash: BytesN<32>,
+        new_archetype: Symbol,
+        signature: BytesN<64>,
+    ) {
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+        admin.require_auth();
+
+        let admin_pubkey: BytesN<32> = e
+            .storage()
+            .instance()
+            .get(&DataKey::AdminPubKey)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+
+        if new_data_hash == BytesN::from_array(&e, &[0u8; 32]) {
+            panic_with_error!(e, ContractError::InvalidDataHash);
+        }
+
+        // Payload: contract_id ‖ user ‖ period ‖ new_archetype ‖ new_data_hash
+        let mut payload = Bytes::new(&e);
+        payload.append(&e.current_contract_address().to_xdr(&e));
+        payload.append(&user.clone().to_xdr(&e));
+        payload.append(&period.to_xdr(&e));
+        payload.append(&new_archetype.clone().to_xdr(&e));
+        payload.append(&new_data_hash.clone().to_xdr(&e));
+        e.crypto()
+            .ed25519_verify(&admin_pubkey, &payload, &signature);
+
+        let wrap_key = DataKey::Wrap(user.clone(), period);
+        let existing: WrapRecord = e
+            .storage()
+            .persistent()
+            .get(&wrap_key)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::WrapNotFound));
+
+        let updated = WrapRecord {
+            timestamp: existing.timestamp, // preserve original timestamp
+            data_hash: new_data_hash,
+            archetype: new_archetype.clone(),
+            period,
+        };
+
+        let ttl_one_year = 17280 * 365;
+        e.storage().persistent().set(&wrap_key, &updated);
+        e.storage()
+            .persistent()
+            .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
+
+        e.events()
+            .publish((symbol_short!("update"), user, period), new_archetype);
+    }
+
     /// Admin-only revocation for incorrect or fraudulent records.
     pub fn revoke_wrap(e: Env, user: Address, period: u64) {
         let admin: Address = e
@@ -415,6 +494,16 @@ impl StellarWrapContract {
     /// Return the number of decimals. Soulbound tokens are non-divisible, so this is always `0`.
     pub fn decimals(_e: Env) -> u32 {
         0
+    }
+
+    /// Return contract-level metadata useful for explorers and indexers.
+    pub fn contract_info(e: Env) -> ContractInfo {
+        ContractInfo {
+            name: String::from_str(&e, "Stellar Wrap Registry"),
+            version: String::from_str(&e, "0.1.0"),
+            repo: String::from_str(&e, "https://github.com/zintarh/stellar-wrap-contract"),
+            description: String::from_str(&e, "Soulbound token registry for Stellar Wrap"),
+        }
     }
 
     /// Upgrade the contract WASM to a new version.

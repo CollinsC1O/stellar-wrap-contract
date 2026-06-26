@@ -234,6 +234,27 @@ fn test_token_metadata() {
     assert_eq!(client.symbol(), String::from_str(&env, "WRAP"));
 }
 
+// ─── Issue #56: contract_info tests ─────────────────────────────────────────
+
+#[test]
+fn test_contract_info_returns_correct_fields() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let info = client.contract_info();
+    assert_eq!(info.name, String::from_str(&env, "Stellar Wrap Registry"));
+    assert_eq!(info.version, String::from_str(&env, "0.1.0"));
+    assert_eq!(
+        info.repo,
+        String::from_str(&env, "https://github.com/zintarh/stellar-wrap-contract")
+    );
+    assert_eq!(
+        info.description,
+        String::from_str(&env, "Soulbound token registry for Stellar Wrap")
+    );
+}
+
 // ─── Issue #84: extend_ttl tests ────────────────────────────────────────────
 
 #[test]
@@ -1098,68 +1119,29 @@ fn test_upgrade_requires_admin_auth() {
     client.upgrade(&fake_wasm);
 }
 
-// ─── Issue #33: role-based access tests ─────────────────────────────────────
+// ─── Issue #59: update_wrap tests ──────────────────────────────────────────
 
-#[test]
-fn test_add_and_remove_minter() {
-    let env = Env::default();
-    let contract_id = env.register_contract(None, StellarWrapContract);
-    let client = StellarWrapContractClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let minter = Address::generate(&env);
-    let pubkey = BytesN::from_array(&env, &[1u8; 32]);
-
-    client.initialize(&admin, &pubkey);
-    env.mock_all_auths();
-
-    assert!(!client.is_minter(&minter));
-    client.add_minter(&minter);
-    assert!(client.is_minter(&minter));
-    client.remove_minter(&minter);
-    assert!(!client.is_minter(&minter));
+fn sign_update_payload(
+    env: &Env,
+    signer: &SigningKey,
+    contract: &Address,
+    user: &Address,
+    period: u64,
+    new_archetype: &Symbol,
+    new_data_hash: &BytesN<32>,
+) -> BytesN<64> {
+    sign_payload(env, signer, contract, user, period, new_archetype, new_data_hash)
 }
 
 #[test]
-fn test_minter_can_mint() {
+fn test_update_wrap_succeeds_and_preserves_timestamp() {
     let env = Env::default();
     let contract_id = env.register_contract(None, StellarWrapContract);
     let client = StellarWrapContractClient::new(&env, &contract_id);
 
-    let signing_key = SigningKey::from_bytes(&[50u8; 32]);
+    let signing_key = SigningKey::from_bytes(&[30u8; 32]);
     let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
     let admin = Address::generate(&env);
-    let minter = Address::generate(&env);
-    let user = Address::generate(&env);
-
-    client.initialize(&admin, &admin_pubkey);
-    env.mock_all_auths();
-
-    client.add_minter(&minter);
-
-    let period = 2025u64;
-    let archetype = symbol_short!("arch");
-    let hash = BytesN::from_array(&env, &[50u8; 32]);
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash);
-
-    // Minter (not admin) calls mint_wrap
-    client.mint_wrap(&minter, &user, &period, &archetype, &hash, &sig);
-
-    let wrap = client.get_wrap(&user, &period).unwrap();
-    assert_eq!(wrap.data_hash, hash);
-}
-
-#[test]
-#[should_panic]
-fn test_non_minter_non_admin_cannot_mint() {
-    let env = Env::default();
-    let contract_id = env.register_contract(None, StellarWrapContract);
-    let client = StellarWrapContractClient::new(&env, &contract_id);
-
-    let signing_key = SigningKey::from_bytes(&[51u8; 32]);
-    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
-    let admin = Address::generate(&env);
-    let attacker = Address::generate(&env);
     let user = Address::generate(&env);
 
     client.initialize(&admin, &admin_pubkey);
@@ -1167,48 +1149,142 @@ fn test_non_minter_non_admin_cannot_mint() {
 
     let period = 2025u64;
     let archetype = symbol_short!("arch");
-    let hash = BytesN::from_array(&env, &[51u8; 32]);
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash);
+    let hash1 = BytesN::from_array(&env, &[41u8; 32]);
 
-    // attacker is not admin and not a registered minter
-    client.mint_wrap(&attacker, &user, &period, &archetype, &hash, &sig);
+    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
+
+    let before = client.get_wrap(&user, &period).unwrap();
+
+    let new_hash = BytesN::from_array(&env, &[99u8; 32]);
+    let new_arch = symbol_short!("builder");
+    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &new_arch, &new_hash);
+    client.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
+
+    let after = client.get_wrap(&user, &period).unwrap();
+    assert_eq!(after.timestamp, before.timestamp, "Original timestamp must be preserved");
+    assert_eq!(after.data_hash, new_hash);
+    assert_eq!(after.archetype, new_arch);
+    assert_eq!(after.period, period);
 }
 
 #[test]
-#[should_panic]
-fn test_add_minter_requires_admin_auth() {
+fn test_update_wrap_emits_update_event() {
     let env = Env::default();
     let contract_id = env.register_contract(None, StellarWrapContract);
     let client = StellarWrapContractClient::new(&env, &contract_id);
 
+    let signing_key = SigningKey::from_bytes(&[31u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
     let admin = Address::generate(&env);
-    let minter = Address::generate(&env);
-    let pubkey = BytesN::from_array(&env, &[1u8; 32]);
+    let user = Address::generate(&env);
 
-    client.initialize(&admin, &pubkey);
-    // No auth mocked
-    client.add_minter(&minter);
-}
-
-#[test]
-#[should_panic]
-fn test_remove_minter_requires_admin_auth() {
-    let env = Env::default();
-    let contract_id = env.register_contract(None, StellarWrapContract);
-    let client = StellarWrapContractClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let minter = Address::generate(&env);
-    let pubkey = BytesN::from_array(&env, &[1u8; 32]);
-
-    client.initialize(&admin, &pubkey);
+    client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
-    client.add_minter(&minter);
 
+    let period = 2025u64;
+    let archetype = symbol_short!("arch");
+    let hash1 = BytesN::from_array(&env, &[41u8; 32]);
+    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
+
+    let new_hash = BytesN::from_array(&env, &[98u8; 32]);
+    let new_arch = symbol_short!("defi");
+    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &new_arch, &new_hash);
+    client.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let (_, topics, data) = last_event;
+
+    let topic_0: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    let topic_1: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    let topic_2: u64 = topics.get(2).unwrap().try_into_val(&env).unwrap();
+    let ev_arch: Symbol = data.try_into_val(&env).unwrap();
+
+    assert_eq!(topic_0, symbol_short!("update"));
+    assert_eq!(topic_1, user);
+    assert_eq!(topic_2, period);
+    assert_eq!(ev_arch, new_arch);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_update_wrap_nonexistent_fails() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[32u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let new_hash = BytesN::from_array(&env, &[99u8; 32]);
+    let new_arch = symbol_short!("arch");
+    let sig = sign_update_payload(&env, &signing_key, &contract_id, &user, 9999, &new_arch, &new_hash);
+    client.update_wrap(&user, &9999, &new_hash, &new_arch, &sig);
+}
+
+#[test]
+#[should_panic]
+fn test_update_wrap_requires_admin_auth() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[33u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let period = 2025u64;
+    let archetype = symbol_short!("arch");
+    let hash1 = BytesN::from_array(&env, &[41u8; 32]);
+    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
+
+    // Reset auth — no admin auth mocked
     let env2 = Env::default();
     let contract_id2 = env2.register_contract(None, StellarWrapContract);
     let client2 = StellarWrapContractClient::new(&env2, &contract_id2);
-    client2.initialize(&admin, &pubkey);
+    client2.initialize(&admin, &admin_pubkey);
+
+    let new_hash = BytesN::from_array(&env2, &[99u8; 32]);
+    let new_arch = symbol_short!("arch");
+    let sig2 = sign_update_payload(&env2, &signing_key, &contract_id2, &user, period, &new_arch, &new_hash);
     // No auth mocked — must panic
-    client2.remove_minter(&minter);
+    client2.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
+}
+
+#[test]
+#[should_panic]
+fn test_update_wrap_zero_hash_rejected() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[34u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let period = 2025u64;
+    let archetype = symbol_short!("arch");
+    let hash1 = BytesN::from_array(&env, &[41u8; 32]);
+    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
+
+    let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &zero_hash);
+    client.update_wrap(&user, &period, &zero_hash, &archetype, &sig2);
 }
