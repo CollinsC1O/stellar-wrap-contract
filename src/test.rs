@@ -11,7 +11,7 @@ use soroban_sdk::{
 };
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::storage_types::{DataKey, WrapRecord};
+use crate::storage_types::{DataKey, WrapRecord, WrapRecordOption};
 
 fn sign_payload(
     env: &Env,
@@ -704,6 +704,233 @@ fn test_get_latest_wrap_single_mint() {
     assert_eq!(latest.data_hash, hash);
 }
 
+// ─── Issue #138: compare_wraps tests ────────────────────────────────────────
+
+#[test]
+fn test_compare_wraps_both_users_have_wraps_same_archetype() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[40u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let period = 2026u64;
+    let archetype = symbol_short!("arch");
+    let hash_a = BytesN::from_array(&env, &[40u8; 32]);
+    let hash_b = BytesN::from_array(&env, &[41u8; 32]);
+
+    let sig_a = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user_a,
+        period,
+        &archetype,
+        &hash_a,
+    );
+    let sig_b = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user_b,
+        period,
+        &archetype,
+        &hash_b,
+    );
+
+    client.mint_wrap(&user_a, &period, &archetype, &hash_a, &sig_a);
+    client.mint_wrap(&user_b, &period, &archetype, &hash_b, &sig_b);
+
+    let comparison = client.compare_wraps(&user_a, &user_b, &period);
+    assert_eq!(comparison.period, period);
+    assert!(comparison.both_have_wrap);
+    assert!(comparison.same_archetype);
+    assert_eq!(
+        comparison.user_a_wrap,
+        WrapRecordOption::Some(client.get_wrap(&user_a, &period).unwrap())
+    );
+    assert_eq!(
+        comparison.user_b_wrap,
+        WrapRecordOption::Some(client.get_wrap(&user_b, &period).unwrap())
+    );
+}
+
+#[test]
+fn test_compare_wraps_both_users_have_wraps_different_archetypes() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[41u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let period = 2026u64;
+    let archetype_a = symbol_short!("arch");
+    let archetype_b = symbol_short!("defi");
+    let hash_a = BytesN::from_array(&env, &[42u8; 32]);
+    let hash_b = BytesN::from_array(&env, &[43u8; 32]);
+
+    let sig_a = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user_a,
+        period,
+        &archetype_a,
+        &hash_a,
+    );
+    let sig_b = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user_b,
+        period,
+        &archetype_b,
+        &hash_b,
+    );
+
+    client.mint_wrap(&user_a, &period, &archetype_a, &hash_a, &sig_a);
+    client.mint_wrap(&user_b, &period, &archetype_b, &hash_b, &sig_b);
+
+    let comparison = client.compare_wraps(&user_a, &user_b, &period);
+    assert!(comparison.both_have_wrap);
+    assert!(!comparison.same_archetype);
+    assert_eq!(
+        comparison.user_a_wrap,
+        WrapRecordOption::Some(client.get_wrap(&user_a, &period).unwrap())
+    );
+    assert_eq!(
+        comparison.user_b_wrap,
+        WrapRecordOption::Some(client.get_wrap(&user_b, &period).unwrap())
+    );
+}
+
+#[test]
+fn test_compare_wraps_one_user_has_wrap() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let period = 2026u64;
+    let archetype = symbol_short!("arch");
+    let hash_a = BytesN::from_array(&env, &[44u8; 32]);
+    let sig_a = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user_a,
+        period,
+        &archetype,
+        &hash_a,
+    );
+
+    client.mint_wrap(&user_a, &period, &archetype, &hash_a, &sig_a);
+
+    let comparison = client.compare_wraps(&user_a, &user_b, &period);
+    assert!(!comparison.both_have_wrap);
+    assert!(!comparison.same_archetype);
+    assert!(comparison.user_a_wrap.is_some());
+    assert!(comparison.user_b_wrap.is_none());
+}
+
+#[test]
+fn test_compare_wraps_neither_user_has_wrap() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let pubkey = BytesN::from_array(&env, &[45u8; 32]);
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+
+    client.initialize(&admin, &pubkey);
+
+    let comparison = client.compare_wraps(&user_a, &user_b, &2026u64);
+    assert!(!comparison.both_have_wrap);
+    assert!(!comparison.same_archetype);
+    assert!(comparison.user_a_wrap.is_none());
+    assert!(comparison.user_b_wrap.is_none());
+}
+
+#[test]
+fn test_compare_total_wraps_returns_lifetime_counts() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[43u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let archetype = symbol_short!("arch");
+    let hash_a_1 = BytesN::from_array(&env, &[46u8; 32]);
+    let hash_a_2 = BytesN::from_array(&env, &[47u8; 32]);
+    let hash_b = BytesN::from_array(&env, &[48u8; 32]);
+
+    let sig_a_1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user_a,
+        2024,
+        &archetype,
+        &hash_a_1,
+    );
+    let sig_a_2 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user_a,
+        2025,
+        &archetype,
+        &hash_a_2,
+    );
+    let sig_b = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user_b,
+        2026,
+        &archetype,
+        &hash_b,
+    );
+
+    client.mint_wrap(&user_a, &2024, &archetype, &hash_a_1, &sig_a_1);
+    client.mint_wrap(&user_a, &2025, &archetype, &hash_a_2, &sig_a_2);
+    client.mint_wrap(&user_b, &2026, &archetype, &hash_b, &sig_b);
+
+    let totals = client.compare_total_wraps(&user_a, &user_b);
+    assert_eq!(totals, (2, 1));
+}
+
 // ─── Issue #85: negative tests before initialize ────────────────────────────
 
 #[test]
@@ -1042,7 +1269,15 @@ fn test_mint_wrap_zero_hash_rejected() {
     let archetype = symbol_short!("arch");
     let period = 2024u64;
 
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &zero_hash);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &zero_hash,
+    );
     // Must panic with InvalidDataHash
     client.mint_wrap(&user, &period, &archetype, &zero_hash, &sig);
 }
@@ -1068,7 +1303,15 @@ fn test_mint_wrap_non_zero_hash_succeeds() {
     let archetype = symbol_short!("arch");
     let period = 2024u64;
 
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &edge_hash);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &edge_hash,
+    );
     client.mint_wrap(&user, &period, &archetype, &edge_hash, &sig);
 
     let wrap = client.get_wrap(&user, &period).unwrap();
@@ -1093,7 +1336,15 @@ fn test_mint_wrap_max_hash_succeeds() {
     let archetype = symbol_short!("arch");
     let period = 2024u64;
 
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &max_hash);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &max_hash,
+    );
     client.mint_wrap(&user, &period, &archetype, &max_hash, &sig);
 
     let wrap = client.get_wrap(&user, &period).unwrap();
@@ -1129,7 +1380,15 @@ fn sign_update_payload(
     new_archetype: &Symbol,
     new_data_hash: &BytesN<32>,
 ) -> BytesN<64> {
-    sign_payload(env, signer, contract, user, period, new_archetype, new_data_hash)
+    sign_payload(
+        env,
+        signer,
+        contract,
+        user,
+        period,
+        new_archetype,
+        new_data_hash,
+    )
 }
 
 #[test]
@@ -1150,18 +1409,37 @@ fn test_update_wrap_succeeds_and_preserves_timestamp() {
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
 
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
     client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
 
     let before = client.get_wrap(&user, &period).unwrap();
 
     let new_hash = BytesN::from_array(&env, &[99u8; 32]);
     let new_arch = symbol_short!("builder");
-    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &new_arch, &new_hash);
+    let sig2 = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &new_arch,
+        &new_hash,
+    );
     client.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
 
     let after = client.get_wrap(&user, &period).unwrap();
-    assert_eq!(after.timestamp, before.timestamp, "Original timestamp must be preserved");
+    assert_eq!(
+        after.timestamp, before.timestamp,
+        "Original timestamp must be preserved"
+    );
     assert_eq!(after.data_hash, new_hash);
     assert_eq!(after.archetype, new_arch);
     assert_eq!(after.period, period);
@@ -1184,12 +1462,28 @@ fn test_update_wrap_emits_update_event() {
     let period = 2025u64;
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
     client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
 
     let new_hash = BytesN::from_array(&env, &[98u8; 32]);
     let new_arch = symbol_short!("defi");
-    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &new_arch, &new_hash);
+    let sig2 = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &new_arch,
+        &new_hash,
+    );
     client.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
 
     let events = env.events().all();
@@ -1224,7 +1518,15 @@ fn test_update_wrap_nonexistent_fails() {
 
     let new_hash = BytesN::from_array(&env, &[99u8; 32]);
     let new_arch = symbol_short!("arch");
-    let sig = sign_update_payload(&env, &signing_key, &contract_id, &user, 9999, &new_arch, &new_hash);
+    let sig = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        9999,
+        &new_arch,
+        &new_hash,
+    );
     client.update_wrap(&user, &9999, &new_hash, &new_arch, &sig);
 }
 
@@ -1246,7 +1548,15 @@ fn test_update_wrap_requires_admin_auth() {
     let period = 2025u64;
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
     client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
 
     // Reset auth — no admin auth mocked
@@ -1257,7 +1567,15 @@ fn test_update_wrap_requires_admin_auth() {
 
     let new_hash = BytesN::from_array(&env2, &[99u8; 32]);
     let new_arch = symbol_short!("arch");
-    let sig2 = sign_update_payload(&env2, &signing_key, &contract_id2, &user, period, &new_arch, &new_hash);
+    let sig2 = sign_update_payload(
+        &env2,
+        &signing_key,
+        &contract_id2,
+        &user,
+        period,
+        &new_arch,
+        &new_hash,
+    );
     // No auth mocked — must panic
     client2.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
 }
@@ -1280,10 +1598,26 @@ fn test_update_wrap_zero_hash_rejected() {
     let period = 2025u64;
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
     client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
 
     let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
-    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &zero_hash);
+    let sig2 = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &zero_hash,
+    );
     client.update_wrap(&user, &period, &zero_hash, &archetype, &sig2);
 }

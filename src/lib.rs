@@ -6,7 +6,15 @@ use soroban_sdk::{
 };
 
 mod storage_types;
-use storage_types::{ContractInfo, DataKey, WrapRecord};
+use storage_types::{ContractInfo, DataKey, WrapComparison, WrapRecord, WrapRecordOption};
+
+fn get_visible_wrap(e: &Env, user: &Address, period: u64) -> Option<WrapRecord> {
+    // Centralize visibility rules for wrap reads so privacy changes such as opt-out can be
+    // enforced consistently across all public read APIs.
+    e.storage()
+        .persistent()
+        .get(&DataKey::Wrap(user.clone(), period))
+}
 
 soroban_sdk::contractmeta!(
     key = "Description",
@@ -325,7 +333,58 @@ impl StellarWrapContract {
     /// # Returns
     /// `Some(WrapRecord)` if a record exists, `None` otherwise.
     pub fn get_wrap(e: Env, user: Address, period: u64) -> Option<WrapRecord> {
-        e.storage().persistent().get(&DataKey::Wrap(user, period))
+        get_visible_wrap(&e, &user, period)
+    }
+
+    /// Compare two users' wrap records for the same period.
+    ///
+    /// This is a read-only helper for social features. It reveals whether each user has a
+    /// visible wrap for `period`, and if both do, whether they share the same archetype.
+    ///
+    /// Privacy note: calling this function can reveal wrap existence and archetype equality for
+    /// both users. If opt-out visibility controls are enabled, opted-out users should resolve
+    /// to `None` through the shared visibility helper.
+    pub fn compare_wraps(e: Env, user_a: Address, user_b: Address, period: u64) -> WrapComparison {
+        let user_a_wrap = get_visible_wrap(&e, &user_a, period);
+        let user_b_wrap = get_visible_wrap(&e, &user_b, period);
+
+        let both_have_wrap = user_a_wrap.is_some() && user_b_wrap.is_some();
+        let same_archetype = match (&user_a_wrap, &user_b_wrap) {
+            (Some(a), Some(b)) => a.archetype == b.archetype,
+            _ => false,
+        };
+
+        WrapComparison {
+            user_a_wrap: match user_a_wrap {
+                Some(wrap) => WrapRecordOption::Some(wrap),
+                None => WrapRecordOption::None,
+            },
+            user_b_wrap: match user_b_wrap {
+                Some(wrap) => WrapRecordOption::Some(wrap),
+                None => WrapRecordOption::None,
+            },
+            both_have_wrap,
+            same_archetype,
+            period,
+        }
+    }
+
+    /// Return lifetime wrap totals for two users in a single read.
+    ///
+    /// This is useful for lightweight leaderboard or profile comparisons.
+    pub fn compare_total_wraps(e: Env, user_a: Address, user_b: Address) -> (u32, u32) {
+        let user_a_total = e
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::WrapCount(user_a))
+            .unwrap_or(0);
+        let user_b_total = e
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::WrapCount(user_b))
+            .unwrap_or(0);
+
+        (user_a_total, user_b_total)
     }
 
     /// Return the total number of wrap records minted for a user (their SBT balance).

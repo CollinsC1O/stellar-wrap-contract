@@ -19,6 +19,33 @@ pub struct WrapRecord {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WrapRecordOption {
+    Some(WrapRecord),
+    None,
+}
+
+impl WrapRecordOption {
+    pub fn is_some(&self) -> bool {
+        matches!(self, Self::Some(_))
+    }
+
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WrapComparison {
+    pub user_a_wrap: WrapRecordOption,
+    pub user_b_wrap: WrapRecordOption,
+    pub both_have_wrap: bool,
+    pub same_archetype: bool,
+    pub period: u64,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     /// Stores the Address of the admin

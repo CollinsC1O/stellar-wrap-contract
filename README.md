@@ -42,7 +42,8 @@ This smart contract provides the on-chain registry for Stellar Wrap records:
 - Archetype/persona assigned to the user (e.g., _"soroban_architect"_, _"defi_patron"_, _"diamond_hand"_)
 
 3.  **Query:** Anyone can call `get_wrap()` to retrieve a user's wrap record, enabling verification and display of on-chain personas.
-4.  **Soulbound:** Records are non-transferable (SBT), permanently linked to the user's Stellar address.
+4.  **Compare:** Anyone can call `compare_wraps()` to compare two users' visible wraps for the same period in one read.
+5.  **Soulbound:** Records are non-transferable (SBT), permanently linked to the user's Stellar address.
 
 ---
 
@@ -104,6 +105,8 @@ sequenceDiagram
     Note over Frontend,Contract: 5. Frontend reads data
     Frontend->>Contract: get_wrap(user, period)
     Contract-->>Frontend: WrapRecord {timestamp, data_hash, archetype, period}
+    Frontend->>Contract: compare_wraps(user_a, user_b, period)
+    Contract-->>Frontend: WrapComparison {user_a_wrap, user_b_wrap, both_have_wrap, same_archetype, period}
     Frontend->>Contract: balance_of(user)
     Contract-->>Frontend: wrap count
     Frontend->>Frontend: Display persona & stats
@@ -127,9 +130,14 @@ sequenceDiagram
 - ✅ Soulbound token (SBT) minting with authorization checks
 - ✅ Wrap record storage (timestamp, data hash, archetype)
 - ✅ Public query interface for retrieving wrap records
+- ✅ Public comparison interface for comparing two users' wraps
 - ✅ Event emission for minting actions
 - ✅ Prevention of duplicate wraps per user
 - ✅ Contract upgrade mechanism (admin-only WASM upgrade via `upgrade()`)
+
+## Privacy Note
+
+`compare_wraps(user_a, user_b, period)` is intentionally read-only and public, like `get_wrap`. That means it can reveal whether each user has a visible wrap for that period, and whether both users share the same archetype. Frontends should present this clearly, and if wrap visibility opt-out is enabled, opted-out users should resolve as `None` in comparisons rather than exposing their record.
 
 ### Upgrading the Contract
 
@@ -185,10 +193,13 @@ The mint reentrancy guard uses Soroban temporary storage, not persistent storage
 - `initialize(e: Env, admin: Address)` - Initialize contract with admin (callable once)
 - `mint_wrap(e: Env, to: Address, data_hash: BytesN<32>, archetype: Symbol)` - Mint a wrap record (admin only)
 - `get_wrap(e: Env, user: Address) -> Option<WrapRecord>` - Retrieve a user's wrap record
+- `compare_wraps(e: Env, user_a: Address, user_b: Address, period: u64) -> WrapComparison` - Compare two users' wraps for one period
+- `compare_total_wraps(e: Env, user_a: Address, user_b: Address) -> (u32, u32)` - Compare lifetime wrap totals
 
 ### Storage
 
 - `WrapRecord`: Contains `timestamp`, `data_hash`, and `archetype`
+- `WrapComparison`: Contains both users' wraps plus comparison booleans
 - `DataKey::Admin`: Stores the admin address
 - `DataKey::Wrap(Address)`: Maps user addresses to their wrap records
 
