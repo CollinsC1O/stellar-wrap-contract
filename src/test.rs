@@ -1287,3 +1287,115 @@ fn test_update_wrap_zero_hash_rejected() {
     let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &zero_hash);
     client.update_wrap(&user, &period, &zero_hash, &archetype, &sig2);
 }
+
+// ─── Tests for standardized signature verification errors (ContractError::InvalidSignature) ───
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_mint_with_invalid_signature_fails() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[1u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let dummy_hash = BytesN::from_array(&env, &[42u8; 32]);
+    let archetype = symbol_short!("arch");
+    let period = 2024u64;
+
+    // Construct a signature that won't pass (e.g. all zeros)
+    let invalid_signature = BytesN::from_array(&env, &[0u8; 64]);
+
+    client.mint_wrap(&user, &period, &archetype, &dummy_hash, &invalid_signature);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_mint_with_wrong_key_signature_fails() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key_correct = SigningKey::from_bytes(&[1u8; 32]);
+    let signing_key_wrong = SigningKey::from_bytes(&[2u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key_correct.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let dummy_hash = BytesN::from_array(&env, &[42u8; 32]);
+    let archetype = symbol_short!("arch");
+    let period = 2024u64;
+
+    // Sign with the wrong key
+    let wrong_signature = sign_payload(
+        &env,
+        &signing_key_wrong,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &dummy_hash,
+    );
+
+    client.mint_wrap(&user, &period, &archetype, &dummy_hash, &wrong_signature);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_update_with_wrong_key_signature_fails() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key_correct = SigningKey::from_bytes(&[1u8; 32]);
+    let signing_key_wrong = SigningKey::from_bytes(&[2u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key_correct.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let dummy_hash = BytesN::from_array(&env, &[42u8; 32]);
+    let archetype = symbol_short!("arch");
+    let period = 2024u64;
+
+    let signature = sign_payload(
+        &env,
+        &signing_key_correct,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &dummy_hash,
+    );
+    
+    // First mint succeeds
+    client.mint_wrap(&user, &period, &archetype, &dummy_hash, &signature);
+
+    let new_hash = BytesN::from_array(&env, &[43u8; 32]);
+    let new_archetype = symbol_short!("new");
+
+    // Sign update with wrong key
+    let wrong_signature = sign_payload(
+        &env,
+        &signing_key_wrong,
+        &contract_id,
+        &user,
+        period,
+        &new_archetype,
+        &new_hash,
+    );
+
+    client.update_wrap(&user, &period, &new_hash, &new_archetype, &wrong_signature);
+}
+

@@ -194,10 +194,14 @@ The mint reentrancy guard uses Soroban temporary storage, not persistent storage
 
 ### Error Codes
 
-| Code | Error |
-| --- | --- |
-| 1 | `AlreadyInitialized` |
-| 2 | `NotInitialized` |
-| 3 | `Unauthorized` |
-| 4 | `WrapAlreadyExists` |
-| 5 | `InvalidSignature` |
+| Code | Error | Description |
+| --- | --- | --- |
+| 1 | `AlreadyInitialized` | `initialize()` was called on a contract that is already initialized. |
+| 2 | `NotInitialized` | A function was called before `initialize()` has been run. |
+| 3 | `Unauthorized` | The caller is not authorized (not the admin, or reentrancy guard triggered). |
+| 4 | `WrapAlreadyExists` | A wrap record for this `(user, period)` pair already exists. |
+| 5 | `WrapNotFound` | The wrap record was not found. |
+| 6 | `InvalidSignature` | The provided Ed25519 signature is invalid or did not verify against the admin public key. |
+| 7 | `InvalidDataHash` | `data_hash` is all-zero bytes, which indicates missing or invalid data. |
+| 8 | `Overflow` | An arithmetic overflow occurred. |
+

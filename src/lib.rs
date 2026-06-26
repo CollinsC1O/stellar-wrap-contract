@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, panic_with_error, symbol_short, xdr::ToXdr, Address,
-    Bytes, BytesN, Env, String, Symbol,
+    Bytes, BytesN, Env, IntoVal, String, Symbol,
 };
 
 mod storage_types;
@@ -35,6 +35,8 @@ pub enum ContractError {
     InvalidSignature = 6,
     /// `data_hash` is all-zero bytes, which indicates missing or invalid data. (code 7)
     InvalidDataHash = 7,
+    /// An arithmetic overflow occurred. (code 8)
+    Overflow = 8,
 }
 
 #[contract]
@@ -156,8 +158,7 @@ impl StellarWrapContract {
         payload.append(&data_hash.clone().to_xdr(&e));
 
         // 5. Verify Admin Signature
-        e.crypto()
-            .ed25519_verify(&admin_pubkey, &payload, &signature);
+        verify_signature(&e, &admin_pubkey, &payload, &signature);
 
         // 6. Check Duplicates & Store Record
         let wrap_key = DataKey::Wrap(user.clone(), period);
@@ -182,9 +183,12 @@ impl StellarWrapContract {
         // 7. Update Balance
         let count_key = DataKey::WrapCount(user.clone());
         let current_count: u32 = e.storage().persistent().get(&count_key).unwrap_or(0);
+        let next_count = current_count
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::Overflow));
         e.storage()
             .persistent()
-            .set(&count_key, &(current_count + 1));
+            .set(&count_key, &next_count);
         e.storage()
             .persistent()
             .extend_ttl(&count_key, ttl_one_year, ttl_one_year);
@@ -259,8 +263,7 @@ impl StellarWrapContract {
         payload.append(&period.to_xdr(&e));
         payload.append(&new_archetype.clone().to_xdr(&e));
         payload.append(&new_data_hash.clone().to_xdr(&e));
-        e.crypto()
-            .ed25519_verify(&admin_pubkey, &payload, &signature);
+        verify_signature(&e, &admin_pubkey, &payload, &signature);
 
         let wrap_key = DataKey::Wrap(user.clone(), period);
         let existing: WrapRecord = e
@@ -469,9 +472,77 @@ impl StellarWrapContract {
         admin.require_auth();
         e.deployer().update_current_contract_wasm(new_wasm_hash);
     }
+
+    /// Verify an Ed25519 signature. Exposes the host `ed25519_verify` function
+    /// as a public contract method so that it can be invoked via `try_invoke_contract`
+    /// to catch panics.
+    pub fn verify_sig(
+        e: Env,
+        public_key: BytesN<32>,
+        payload: Bytes,
+        signature: BytesN<64>,
+    ) {
+        e.crypto()
+            .ed25519_verify(&public_key, &payload, &signature);
+    }
+}
+
+/// Helper to verify Ed25519 signature and handle panic explicitly.
+fn verify_signature(
+    e: &Env,
+    admin_pubkey: &BytesN<32>,
+    payload: &Bytes,
+    signature: &BytesN<64>,
+) {
+    // 1. Input validation first:
+    // Ensure public key is not all zeros
+    if admin_pubkey == &BytesN::from_array(e, &[0u8; 32]) {
+        panic_with_error!(e, ContractError::InvalidSignature);
+    }
+
+    // Ensure signature is not all zeros
+    if signature == &BytesN::from_array(e, &[0u8; 64]) {
+        panic_with_error!(e, ContractError::InvalidSignature);
+    }
+
+    // Validate signature S-value scalar range (Ed25519 malleability protection / range check)
+    let s_part = signature.slice(32..64);
+    const L: [u8; 32] = [
+        0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
+    ];
+    let mut s_array = [0u8; 32];
+    s_part.copy_into_slice(&mut s_array);
+    
+    let mut is_s_valid = false;
+    for i in (0..32).rev() {
+        if s_array[i] < L[i] {
+            is_s_valid = true;
+            break;
+        } else if s_array[i] > L[i] {
+            break;
+        }
+    }
+    
+    if !is_s_valid {
+        panic_with_error!(e, ContractError::InvalidSignature);
+    }
+
+    // 2. Call verify_sig via try_invoke_contract to catch host-level verification panics
+    // and explicitly map them to ContractError::InvalidSignature.
+    let current_address = e.current_contract_address();
+    let func = Symbol::new(e, "verify_sig");
+    let args = (admin_pubkey.clone(), payload.clone(), signature.clone()).into_val(e);
+
+    let result = e.try_invoke_contract::<(), soroban_sdk::Error>(&current_address, &func, args);
+    match result {
+        Ok(Ok(())) => {}
+        _ => panic_with_error!(e, ContractError::InvalidSignature),
+    }
 }
 
 #[cfg(test)]
 mod security_test;
 #[cfg(test)]
 mod test;
+
