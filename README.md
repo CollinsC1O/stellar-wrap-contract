@@ -178,6 +178,42 @@ The mint reentrancy guard uses Soroban temporary storage, not persistent storage
 - On successful mint, the guard key is removed explicitly.
 - On failure paths (panic), the temporary entry is not persisted forever and is naturally cleaned up by Soroban TTL.
 
+## 🧬 Design Decision: Multiple Data Hashes per Wrap
+
+**Issue [#137](https://github.com/zintarh/stellar-wrap-contract/issues/137) — Support tiered data verification (e.g. summary + detail)**
+
+### The problem
+
+A `WrapRecord` stores a single `data_hash`. Some integrations need more than one hash per
+period — e.g. a **summary** hash over the top-line stats (cheap to verify) and a **detail**
+hash over the full activity log. Previously this forced two separate wraps for the same period.
+
+### Options considered
+
+| Option | Approach | Why rejected / selected |
+|---|---|---|
+| **A** | Add `detail_hash: Option<BytesN<32>>` to `WrapRecord` | Breaking storage change; forces the `mint_wrap` signing payload to include both hashes; only supports a fixed second tier. |
+| **B** | Separate `DataKey::AuxHash(Address, u64, Symbol)` storage entries | ✅ **Selected** — non-breaking, `mint_wrap` payload unchanged, supports arbitrary named tiers, no cost imposed on wraps that don't use it. |
+| **C** | Make `data_hash` a Merkle root of multiple hashes | No storage change, but verification requires the client to reconstruct the tree and supply proofs; integrators can't fetch an individual tier's hash on-chain. |
+
+### Decision: **Option B — auxiliary hashes in separate storage**
+
+**Rationale:**
+
+1. **Non-breaking.** `WrapRecord` and the `mint_wrap` Ed25519 signing payload are untouched, so existing wraps and the off-chain signer keep working as-is.
+2. **Flexible tiering.** The `hash_type` `Symbol` (e.g. `"summary"`, `"detail"`) lets a period carry any number of named hashes rather than a single fixed second field.
+3. **Pay only when used.** Wraps that need just one hash incur zero extra storage — aux entries exist only when an admin writes them.
+
+### Multi-hash scheme for integrators
+
+- **Primary hash** — set at mint time in `WrapRecord.data_hash`, covered by the admin signature. Verify with `verify_data(user, period, data)`.
+- **Auxiliary hashes** — written by the admin after mint via `set_aux_hash(user, period, hash_type, hash)`, one per `hash_type`. Read with `get_aux_hash(user, period, hash_type)` and verify a blob against a tier with `verify_aux_data(user, period, hash_type, data)`.
+- Auxiliary hashes are **not** part of the mint signature; they rely on admin authorization instead. Writing the same `(user, period, hash_type)` again overwrites the prior value (admin correction). A wrap must already exist for the period, otherwise `set_aux_hash` fails with `WrapNotFound`.
+
+**Migration:** existing wraps simply have no `AuxHash` entries — `get_aux_hash` returns `None` and `verify_aux_data` returns `false` until the admin sets them. No data migration is required.
+
+---
+
 ## 📝 Contract Interface
 
 ### Functions

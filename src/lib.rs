@@ -286,6 +286,81 @@ impl StellarWrapContract {
             .publish((symbol_short!("update"), user, period), new_archetype);
     }
 
+    /// Store an auxiliary data hash for tiered verification (admin-only).
+    ///
+    /// A wrap's primary `data_hash` (set at mint) covers one view of the off-chain data.
+    /// Some integrations need more than one hash per period — e.g. a `"summary"` hash over
+    /// the top-line stats and a `"detail"` hash over the full activity log. Rather than
+    /// minting a second wrap, the admin records each extra hash here under a `hash_type`
+    /// label. Auxiliary hashes are stored in their own `DataKey::AuxHash` entries, so the
+    /// `WrapRecord` layout and the `mint_wrap` signing payload are unchanged.
+    ///
+    /// Calling this again with the same `(user, period, hash_type)` overwrites the prior
+    /// value, allowing the admin to correct a hash.
+    ///
+    /// # Parameters
+    /// - `user`: The address whose wrap the aux hash belongs to.
+    /// - `period`: The period identifier of the parent wrap.
+    /// - `hash_type`: A short `Symbol` naming the tier (e.g. `"summary"`, `"detail"`).
+    /// - `hash`: SHA-256 hash for this tier. Must not be all-zero bytes.
+    ///
+    /// # Authorization
+    /// Requires authorization from the **admin**.
+    ///
+    /// # Panics
+    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
+    /// - [`ContractError::Unauthorized`] if the caller is not the admin.
+    /// - [`ContractError::InvalidDataHash`] if `hash` is all-zero bytes.
+    /// - [`ContractError::WrapNotFound`] if no wrap exists for `(user, period)`.
+    pub fn set_aux_hash(e: Env, user: Address, period: u64, hash_type: Symbol, hash: BytesN<32>) {
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+        admin.require_auth();
+
+        if hash == BytesN::from_array(&e, &[0u8; 32]) {
+            panic_with_error!(e, ContractError::InvalidDataHash);
+        }
+
+        // The aux hash supplements an existing wrap — refuse to create orphans.
+        let wrap_key = DataKey::Wrap(user.clone(), period);
+        if !e.storage().persistent().has(&wrap_key) {
+            panic_with_error!(e, ContractError::WrapNotFound);
+        }
+
+        let aux_key = DataKey::AuxHash(user.clone(), period, hash_type.clone());
+        let ttl_one_year = 17280 * 365;
+        e.storage().persistent().set(&aux_key, &hash);
+        e.storage()
+            .persistent()
+            .extend_ttl(&aux_key, ttl_one_year, ttl_one_year);
+
+        e.events()
+            .publish((symbol_short!("auxhash"), user, period), hash_type);
+    }
+
+    /// Retrieve an auxiliary data hash previously stored via [`set_aux_hash`].
+    ///
+    /// # Parameters
+    /// - `user`: The address whose aux hash is requested.
+    /// - `period`: The period identifier of the parent wrap.
+    /// - `hash_type`: The tier label used when the hash was stored.
+    ///
+    /// # Returns
+    /// `Some(BytesN<32>)` if a hash was stored for that `(user, period, hash_type)`, else `None`.
+    pub fn get_aux_hash(
+        e: Env,
+        user: Address,
+        period: u64,
+        hash_type: Symbol,
+    ) -> Option<BytesN<32>> {
+        e.storage()
+            .persistent()
+            .get(&DataKey::AuxHash(user, period, hash_type))
+    }
+
     /// Admin-only revocation for incorrect or fraudulent records.
     pub fn revoke_wrap(e: Env, user: Address, period: u64) {
         let admin: Address = e
@@ -362,6 +437,42 @@ impl StellarWrapContract {
             Some(record) => {
                 let computed_hash = e.crypto().sha256(&data);
                 record.data_hash == BytesN::from_array(&e, &computed_hash.to_array())
+            }
+            None => false,
+        }
+    }
+
+    /// Verify `data` against a specific tier's hash, choosing which hash to check.
+    ///
+    /// Companion to [`verify_data`], which always checks the primary `WrapRecord.data_hash`.
+    /// Pass the `hash_type` of any auxiliary hash stored via [`set_aux_hash`] (e.g.
+    /// `"summary"` or `"detail"`) to verify against that tier instead. This lets an
+    /// integrator confirm, say, the summary blob without holding the full detail blob.
+    ///
+    /// # Parameters
+    /// - `user`: The address whose wrap is checked.
+    /// - `period`: The period identifier to look up.
+    /// - `hash_type`: The tier label of the auxiliary hash to compare against.
+    /// - `data`: The raw bytes whose SHA-256 will be compared against the stored hash.
+    ///
+    /// # Returns
+    /// `true` if the SHA-256 of `data` matches the stored aux hash, `false` if it does not
+    /// or if no aux hash exists for that `(user, period, hash_type)`.
+    pub fn verify_aux_data(
+        e: Env,
+        user: Address,
+        period: u64,
+        hash_type: Symbol,
+        data: Bytes,
+    ) -> bool {
+        let aux: Option<BytesN<32>> = e
+            .storage()
+            .persistent()
+            .get(&DataKey::AuxHash(user, period, hash_type));
+        match aux {
+            Some(stored_hash) => {
+                let computed_hash = e.crypto().sha256(&data);
+                stored_hash == BytesN::from_array(&e, &computed_hash.to_array())
             }
             None => false,
         }

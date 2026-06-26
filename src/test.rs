@@ -1042,7 +1042,15 @@ fn test_mint_wrap_zero_hash_rejected() {
     let archetype = symbol_short!("arch");
     let period = 2024u64;
 
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &zero_hash);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &zero_hash,
+    );
     // Must panic with InvalidDataHash
     client.mint_wrap(&user, &period, &archetype, &zero_hash, &sig);
 }
@@ -1068,7 +1076,15 @@ fn test_mint_wrap_non_zero_hash_succeeds() {
     let archetype = symbol_short!("arch");
     let period = 2024u64;
 
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &edge_hash);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &edge_hash,
+    );
     client.mint_wrap(&user, &period, &archetype, &edge_hash, &sig);
 
     let wrap = client.get_wrap(&user, &period).unwrap();
@@ -1093,7 +1109,15 @@ fn test_mint_wrap_max_hash_succeeds() {
     let archetype = symbol_short!("arch");
     let period = 2024u64;
 
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &max_hash);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &max_hash,
+    );
     client.mint_wrap(&user, &period, &archetype, &max_hash, &sig);
 
     let wrap = client.get_wrap(&user, &period).unwrap();
@@ -1129,7 +1153,15 @@ fn sign_update_payload(
     new_archetype: &Symbol,
     new_data_hash: &BytesN<32>,
 ) -> BytesN<64> {
-    sign_payload(env, signer, contract, user, period, new_archetype, new_data_hash)
+    sign_payload(
+        env,
+        signer,
+        contract,
+        user,
+        period,
+        new_archetype,
+        new_data_hash,
+    )
 }
 
 #[test]
@@ -1150,18 +1182,37 @@ fn test_update_wrap_succeeds_and_preserves_timestamp() {
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
 
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
     client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
 
     let before = client.get_wrap(&user, &period).unwrap();
 
     let new_hash = BytesN::from_array(&env, &[99u8; 32]);
     let new_arch = symbol_short!("builder");
-    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &new_arch, &new_hash);
+    let sig2 = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &new_arch,
+        &new_hash,
+    );
     client.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
 
     let after = client.get_wrap(&user, &period).unwrap();
-    assert_eq!(after.timestamp, before.timestamp, "Original timestamp must be preserved");
+    assert_eq!(
+        after.timestamp, before.timestamp,
+        "Original timestamp must be preserved"
+    );
     assert_eq!(after.data_hash, new_hash);
     assert_eq!(after.archetype, new_arch);
     assert_eq!(after.period, period);
@@ -1184,12 +1235,28 @@ fn test_update_wrap_emits_update_event() {
     let period = 2025u64;
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
     client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
 
     let new_hash = BytesN::from_array(&env, &[98u8; 32]);
     let new_arch = symbol_short!("defi");
-    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &new_arch, &new_hash);
+    let sig2 = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &new_arch,
+        &new_hash,
+    );
     client.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
 
     let events = env.events().all();
@@ -1224,7 +1291,15 @@ fn test_update_wrap_nonexistent_fails() {
 
     let new_hash = BytesN::from_array(&env, &[99u8; 32]);
     let new_arch = symbol_short!("arch");
-    let sig = sign_update_payload(&env, &signing_key, &contract_id, &user, 9999, &new_arch, &new_hash);
+    let sig = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        9999,
+        &new_arch,
+        &new_hash,
+    );
     client.update_wrap(&user, &9999, &new_hash, &new_arch, &sig);
 }
 
@@ -1246,7 +1321,15 @@ fn test_update_wrap_requires_admin_auth() {
     let period = 2025u64;
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
     client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
 
     // Reset auth — no admin auth mocked
@@ -1257,7 +1340,15 @@ fn test_update_wrap_requires_admin_auth() {
 
     let new_hash = BytesN::from_array(&env2, &[99u8; 32]);
     let new_arch = symbol_short!("arch");
-    let sig2 = sign_update_payload(&env2, &signing_key, &contract_id2, &user, period, &new_arch, &new_hash);
+    let sig2 = sign_update_payload(
+        &env2,
+        &signing_key,
+        &contract_id2,
+        &user,
+        period,
+        &new_arch,
+        &new_hash,
+    );
     // No auth mocked — must panic
     client2.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
 }
@@ -1280,10 +1371,277 @@ fn test_update_wrap_zero_hash_rejected() {
     let period = 2025u64;
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
     client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
 
     let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
-    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &zero_hash);
+    let sig2 = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &zero_hash,
+    );
     client.update_wrap(&user, &period, &zero_hash, &archetype, &sig2);
+}
+
+// ─── Issue #137: multiple data hashes per wrap (aux hashes) ──────────────────
+
+/// Mint a wrap and return the (env, contract_id, client, user) needed by aux-hash tests.
+fn setup_minted_wrap(
+    seed: u8,
+) -> (
+    Env,
+    Address,
+    StellarWrapContractClient<'static>,
+    Address,
+    u64,
+) {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[seed; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let period = 202412u64;
+    let archetype = symbol_short!("arch");
+    let primary_hash = BytesN::from_array(&env, &[seed; 32]);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &primary_hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &primary_hash, &sig);
+
+    (env, contract_id, client, user, period)
+}
+
+#[test]
+fn test_set_and_get_multiple_aux_hashes() {
+    let (env, _contract_id, client, user, period) = setup_minted_wrap(40);
+
+    let summary = symbol_short!("summary");
+    let detail = symbol_short!("detail");
+    let summary_hash = BytesN::from_array(&env, &[71u8; 32]);
+    let detail_hash = BytesN::from_array(&env, &[72u8; 32]);
+
+    client.set_aux_hash(&user, &period, &summary, &summary_hash);
+    client.set_aux_hash(&user, &period, &detail, &detail_hash);
+
+    // Each tier is retrievable independently.
+    assert_eq!(
+        client.get_aux_hash(&user, &period, &summary),
+        Some(summary_hash)
+    );
+    assert_eq!(
+        client.get_aux_hash(&user, &period, &detail),
+        Some(detail_hash)
+    );
+
+    // Unknown tier returns None.
+    assert_eq!(
+        client.get_aux_hash(&user, &period, &symbol_short!("missing")),
+        None
+    );
+}
+
+#[test]
+fn test_get_aux_hash_none_when_unset() {
+    let (_env, _contract_id, client, user, period) = setup_minted_wrap(41);
+    assert_eq!(
+        client.get_aux_hash(&user, &period, &symbol_short!("summary")),
+        None
+    );
+}
+
+#[test]
+fn test_set_aux_hash_overwrites() {
+    let (env, _contract_id, client, user, period) = setup_minted_wrap(42);
+
+    let tier = symbol_short!("summary");
+    let first = BytesN::from_array(&env, &[1u8; 32]);
+    let second = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.set_aux_hash(&user, &period, &tier, &first);
+    assert_eq!(client.get_aux_hash(&user, &period, &tier), Some(first));
+
+    client.set_aux_hash(&user, &period, &tier, &second);
+    assert_eq!(client.get_aux_hash(&user, &period, &tier), Some(second));
+}
+
+#[test]
+fn test_verify_aux_data_summary_vs_detail() {
+    let (env, _contract_id, client, user, period) = setup_minted_wrap(43);
+
+    let summary_data = Bytes::from_slice(&env, b"{\"top_stat\":42}");
+    let detail_data = Bytes::from_slice(&env, b"{\"full_log\":[1,2,3,4,5]}");
+
+    let summary_hash = BytesN::from_array(&env, &env.crypto().sha256(&summary_data).to_array());
+    let detail_hash = BytesN::from_array(&env, &env.crypto().sha256(&detail_data).to_array());
+
+    let summary = symbol_short!("summary");
+    let detail = symbol_short!("detail");
+    client.set_aux_hash(&user, &period, &summary, &summary_hash);
+    client.set_aux_hash(&user, &period, &detail, &detail_hash);
+
+    // Each tier verifies against its own data.
+    assert!(client.verify_aux_data(&user, &period, &summary, &summary_data));
+    assert!(client.verify_aux_data(&user, &period, &detail, &detail_data));
+
+    // Cross-checking the wrong tier fails.
+    assert!(!client.verify_aux_data(&user, &period, &summary, &detail_data));
+    assert!(!client.verify_aux_data(&user, &period, &detail, &summary_data));
+
+    // Verifying a tier that was never set returns false.
+    assert!(!client.verify_aux_data(&user, &period, &symbol_short!("none"), &summary_data));
+}
+
+#[test]
+fn test_verify_data_primary_independent_of_aux() {
+    // The primary verify_data path keeps working alongside aux hashes.
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[44u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let primary_data = Bytes::from_slice(&env, b"{\"primary\":true}");
+    let primary_hash = BytesN::from_array(&env, &env.crypto().sha256(&primary_data).to_array());
+    let archetype = symbol_short!("arch");
+    let period = 202412u64;
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &primary_hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &primary_hash, &sig);
+
+    let aux_data = Bytes::from_slice(&env, b"{\"aux\":true}");
+    let aux_hash = BytesN::from_array(&env, &env.crypto().sha256(&aux_data).to_array());
+    client.set_aux_hash(&user, &period, &symbol_short!("detail"), &aux_hash);
+
+    // Primary verifies via verify_data; aux via verify_aux_data — they don't interfere.
+    assert!(client.verify_data(&user, &period, &primary_data));
+    assert!(client.verify_aux_data(&user, &period, &symbol_short!("detail"), &aux_data));
+    assert!(!client.verify_data(&user, &period, &aux_data));
+    assert!(!client.verify_aux_data(&user, &period, &symbol_short!("detail"), &primary_data));
+}
+
+#[test]
+fn test_set_aux_hash_emits_event() {
+    let (env, contract_id, client, user, period) = setup_minted_wrap(45);
+
+    let tier = symbol_short!("summary");
+    let hash = BytesN::from_array(&env, &[77u8; 32]);
+    client.set_aux_hash(&user, &period, &tier, &hash);
+
+    let events = env.events().all();
+    let last_event = events.last().expect("Expected aux hash event");
+    let (event_contract, topics, data) = last_event;
+
+    assert_eq!(event_contract, contract_id);
+    let topic_0: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    let topic_1: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    let topic_2: u64 = topics.get(2).unwrap().try_into_val(&env).unwrap();
+    let ev_type: Symbol = data.try_into_val(&env).unwrap();
+
+    assert_eq!(topic_0, symbol_short!("auxhash"));
+    assert_eq!(topic_1, user);
+    assert_eq!(topic_2, period);
+    assert_eq!(ev_type, tier);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_set_aux_hash_zero_rejected() {
+    let (env, _contract_id, client, user, period) = setup_minted_wrap(46);
+    let zero = BytesN::from_array(&env, &[0u8; 32]);
+    client.set_aux_hash(&user, &period, &symbol_short!("summary"), &zero);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_set_aux_hash_requires_existing_wrap() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let pubkey = BytesN::from_array(&env, &[47u8; 32]);
+    client.initialize(&admin, &pubkey);
+    env.mock_all_auths();
+
+    let user = Address::generate(&env);
+    let hash = BytesN::from_array(&env, &[1u8; 32]);
+    // No wrap minted for (user, 9999) — must fail with WrapNotFound.
+    client.set_aux_hash(&user, &9999, &symbol_short!("summary"), &hash);
+}
+
+#[test]
+#[should_panic]
+fn test_set_aux_hash_requires_admin_auth() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[48u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let period = 202412u64;
+    let archetype = symbol_short!("arch");
+    let primary_hash = BytesN::from_array(&env, &[48u8; 32]);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &primary_hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &primary_hash, &sig);
+
+    // Fresh env without admin auth mocked — set_aux_hash must panic.
+    let env2 = Env::default();
+    let contract_id2 = env2.register_contract(None, StellarWrapContract);
+    let client2 = StellarWrapContractClient::new(&env2, &contract_id2);
+    client2.initialize(&admin, &admin_pubkey);
+
+    let hash = BytesN::from_array(&env2, &[49u8; 32]);
+    client2.set_aux_hash(&user, &period, &symbol_short!("summary"), &hash);
 }

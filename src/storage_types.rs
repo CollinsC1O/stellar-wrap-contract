@@ -32,6 +32,11 @@ pub enum DataKey {
     WrapCount(Address),
     /// Tracks the latest (highest) period minted for a user
     LatestPeriod(Address),
+    /// Auxiliary data hashes for tiered verification, keyed by
+    /// (user, period, hash_type). The `hash_type` Symbol names the tier
+    /// (e.g. "summary", "detail"). The primary hash stays in `WrapRecord.data_hash`.
+    /// See [Issue #137](https://github.com/zintarh/stellar-wrap-contract/issues/137).
+    AuxHash(Address, u64, Symbol),
     /// Temporary, invocation-scoped reentrancy guard for mint flow
     MintGuard(Address),
 }
