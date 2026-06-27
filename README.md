@@ -111,6 +111,30 @@ sequenceDiagram
 
 ---
 
+## 🔍 Lint Policy
+
+Enforced via `#![deny(...)]` at the top of `src/lib.rs` (issue [#132](https://github.com/zintarh/stellar-wrap-contract/issues/132)).
+
+| Lint | Why |
+|---|---|
+| `clippy::pedantic` | Catches a broader class of correctness and style issues beyond the default set |
+| `clippy::cast_possible_truncation` | Guards against lossy numeric casts (e.g. `u64 as u32`) |
+| `clippy::cast_sign_loss` | Guards against sign-discarding casts (e.g. `i64 as u64`) |
+| `clippy::missing_panics_doc` | Ensures every public function documents its panic conditions |
+
+**Allowed suppressions (inline `#[allow]` with explanation required):**
+
+| Lint | Location | Reason |
+|---|---|---|
+| `clippy::must_use_candidate` | crate-wide | Soroban contract functions are invoked by the runtime; `#[must_use]` is not applicable |
+| `clippy::missing_docs_in_private_items` | crate-wide | Macro-generated items from `contractimpl` would produce spurious warnings |
+| `clippy::too_many_lines` | `mint_wrap` | The function covers one sequential security-critical flow; splitting it would obscure step ordering |
+| `clippy::cast_possible_truncation`, `clippy::cast_sign_loss` | `balance_of` | `u32 as i128` is lossless — `u32::MAX` (≈4 × 10⁹) fits within `i128` without truncation or sign loss |
+
+CI enforces `cargo clippy -- -D warnings` on every push and pull request to `main`.
+
+---
+
 ## 🛠️ Tech Stack
 
 - **Language:** Rust

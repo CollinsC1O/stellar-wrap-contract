@@ -1,4 +1,17 @@
 #![no_std]
+// --- Lint policy (issue #132) ---
+// Enforce a curated set of clippy lints beyond the default set.
+// Any new lint allowed inline must include a comment explaining why.
+#![deny(clippy::pedantic)]
+#![deny(clippy::cast_possible_truncation)]
+#![deny(clippy::cast_sign_loss)]
+#![deny(clippy::missing_panics_doc)]
+// `#[must_use]` cannot be applied inside `#[contractimpl]` generated code, and
+// Soroban SDK contract functions are invoked by the runtime, not by Rust callers.
+#![allow(clippy::must_use_candidate)]
+// `contractimpl` generates an inherent impl; clippy pedantic flags missing docs
+// on the *generated* items, not our hand-written ones. Suppress the noise.
+#![allow(clippy::missing_docs_in_private_items)]
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, panic_with_error, symbol_short, xdr::ToXdr, Address,
@@ -116,6 +129,9 @@ impl StellarWrapContract {
     /// - [`ContractError::InvalidDataHash`] if `data_hash` is all-zero bytes.
     /// - [`ContractError::InvalidSignature`] if the Ed25519 signature is invalid.
     /// - [`ContractError::WrapAlreadyExists`] if a wrap for `(user, period)` already exists.
+    // mint_wrap intentionally covers one complete, sequential flow (auth → verify → store → emit).
+    // Splitting it would obscure the security-critical ordering of steps.
+    #[allow(clippy::too_many_lines)]
     pub fn mint_wrap(
         e: Env,
         user: Address,
@@ -287,6 +303,13 @@ impl StellarWrapContract {
     }
 
     /// Admin-only revocation for incorrect or fraudulent records.
+    ///
+    /// # Authorization
+    /// Requires authorization from the **admin**.
+    ///
+    /// # Panics
+    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
+    /// - [`ContractError::WrapNotFound`] if no wrap exists for `(user, period)`.
     pub fn revoke_wrap(e: Env, user: Address, period: u64) {
         let admin: Address = e
             .storage()
@@ -338,10 +361,14 @@ impl StellarWrapContract {
     /// has not been initialized.
     pub fn balance_of(e: Env, id: Address) -> i128 {
         let count_key = DataKey::WrapCount(id);
-        e.storage()
+        // u32 fits entirely in i128 — no truncation or sign loss is possible.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let balance = e
+            .storage()
             .persistent()
             .get::<_, u32>(&count_key)
-            .unwrap_or(0) as i128
+            .unwrap_or(0) as i128;
+        balance
     }
 
     /// Verify that the SHA-256 hash of `data` matches the `data_hash` stored in a wrap record.
