@@ -19,15 +19,29 @@ pub struct WrapRecordV1 {
     pub period: u64,
 }
 
+/// Period encoded as YYYYMM (e.g., 202512 = December 2025)
+pub type WrapPeriod = u64;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WrapRecordV2 {
+    pub timestamp: u64,
+    pub data_hash: BytesN<32>,
+    pub archetype: Symbol,
+    pub period: u64,
+    pub image_uri: String,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WrapRecord {
     pub timestamp: u64,
     pub data_hash: BytesN<32>,
     pub archetype: Symbol,
-    pub period: u64, // Standardized to u64 for better indexing/sorting
-    /// Optional off-chain image URI (schema v2+). Empty for legacy records.
+    pub period: WrapPeriod,
     pub image_uri: String,
+    /// Optional on-chain metadata/notes (schema v3+)
+    pub metadata: Option<String>,
 }
 
 #[contracttype]
@@ -46,6 +60,18 @@ pub enum DataKey {
     WrapCount(Address),
     /// Tracks the latest (highest) period minted for a user
     LatestPeriod(Address),
+    /// Tracks all periods for a user (default campaign)
+    UserPeriods(Address),
+    /// Stores campaign-specific WrapRecords
+    CampaignWrap(Symbol, Address, u64),
+    /// Stores the total number of campaign wraps for a specific user
+    CampaignWrapCount(Symbol, Address),
+    /// Tracks the latest (highest) campaign period minted for a user
+    CampaignLatestPeriod(Symbol, Address),
+    /// Tracks all periods for a user in a specific campaign
+    CampaignUserPeriods(Symbol, Address),
+    /// List of all campaigns created by admin
+    Campaigns,
     /// Temporary, invocation-scoped reentrancy guard for mint flow
     MintGuard(Address),
     /// Merkle root for batch claims per period
@@ -60,3 +86,5 @@ pub enum DataKey {
 pub const SCHEMA_VERSION: u32 = 1;
 /// Target schema version after v1 → v2 migration (`image_uri` field).
 pub const SCHEMA_VERSION_V2: u32 = 2;
+/// Target schema version after v2 → v3 migration (`metadata` field).
+pub const SCHEMA_VERSION_V3: u32 = 3;

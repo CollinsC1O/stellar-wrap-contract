@@ -27,8 +27,9 @@
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
                 },
                 {
-                  "bytes": "85f5485c1f0ff3d73bddbf9fa855393dd44a68ffe57277fe32d58a538addb6597e18710c13b6dbedb1db7b5fba922d45d3086614c65587e04969621d5eb85702"
-                }
+                  "bytes": "c9de416188ee995e963c67519e4f753654527871eab2ffa27449be978742d030631fc017dc7c14e9d13d821169b3e68c91393f6c60193fa0153160ecf3917d0d"
+                },
+                "void"
               ]
             }
           },
@@ -99,6 +100,55 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "UserPeriods"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "UserPeriods"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "u64": 2024
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          6307200
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
                   "symbol": "Wrap"
                 },
                 {
@@ -150,6 +200,20 @@
                       "val": {
                         "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "image_uri"
+                      },
+                      "val": {
+                        "string": ""
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "metadata"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -277,7 +341,7 @@
                           ]
                         },
                         "val": {
-                          "u32": 1
+                          "u32": 3
                         }
                       }
                     ]
@@ -434,8 +498,9 @@
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
                 },
                 {
-                  "bytes": "85f5485c1f0ff3d73bddbf9fa855393dd44a68ffe57277fe32d58a538addb6597e18710c13b6dbedb1db7b5fba922d45d3086614c65587e04969621d5eb85702"
-                }
+                  "bytes": "c9de416188ee995e963c67519e4f753654527871eab2ffa27449be978742d030631fc017dc7c14e9d13d821169b3e68c91393f6c60193fa0153160ecf3917d0d"
+                },
+                "void"
               ]
             }
           }

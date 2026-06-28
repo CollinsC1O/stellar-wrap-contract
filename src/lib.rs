@@ -9,7 +9,8 @@ mod merkle;
 mod storage_types;
 use merkle::{compute_merkle_leaf, verify_merkle_proof};
 use storage_types::{
-    ContractInfo, DataKey, WrapRecord, WrapRecordV1, SCHEMA_VERSION, SCHEMA_VERSION_V2,
+    ContractInfo, DataKey, WrapPeriod, WrapRecord, WrapRecordV1, WrapRecordV2, SCHEMA_VERSION,
+    SCHEMA_VERSION_V2, SCHEMA_VERSION_V3,
 };
 
 soroban_sdk::contractmeta!(
@@ -47,6 +48,10 @@ pub enum ContractError {
     MerkleAlreadyClaimed = 10,
     /// `migrate()` was called with invalid version parameters. (code 11)
     InvalidMigration = 11,
+    /// The period is not in a valid YYYYMM range. (code 12)
+    InvalidPeriod = 12,
+    /// The specified campaign was not found/registered. (code 13)
+    CampaignNotFound = 13,
 }
 
 #[contract]
@@ -73,7 +78,7 @@ impl StellarWrapContract {
             .set(&DataKey::AdminPubKey, &admin_pubkey);
         e.storage()
             .instance()
-            .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+            .set(&DataKey::SchemaVersion, &SCHEMA_VERSION_V3);
     }
 
     /// Replace the current admin with a new address.
@@ -134,11 +139,14 @@ impl StellarWrapContract {
     pub fn mint_wrap(
         e: Env,
         user: Address,
-        period: u64,
+        period: WrapPeriod,
         archetype: Symbol,
         data_hash: BytesN<32>,
         signature: BytesN<64>,
+        metadata: Option<String>,
     ) {
+        Self::validate_period(&e, period);
+
         // 1. Security: Ensure the user actually signed this transaction
         user.require_auth();
 
@@ -162,13 +170,14 @@ impl StellarWrapContract {
             panic_with_error!(e, ContractError::InvalidDataHash);
         }
 
-        // 4. Reconstruct payload: contract_id ‖ user ‖ period ‖ archetype ‖ data_hash
+        // 4. Reconstruct payload: contract_id ‖ user ‖ period ‖ archetype ‖ data_hash ‖ metadata
         let mut payload = Bytes::new(&e);
         payload.append(&e.current_contract_address().to_xdr(&e));
         payload.append(&user.clone().to_xdr(&e));
         payload.append(&period.to_xdr(&e));
         payload.append(&archetype.clone().to_xdr(&e));
         payload.append(&data_hash.clone().to_xdr(&e));
+        payload.append(&metadata.clone().to_xdr(&e));
 
         // 5. Verify Admin Signature
         e.crypto()
@@ -186,9 +195,87 @@ impl StellarWrapContract {
             archetype: archetype.clone(),
             period,
             image_uri: String::from_str(&e, ""),
+            metadata,
         };
 
-        Self::persist_wrap_record(&e, user.clone(), period, record, archetype);
+        Self::persist_wrap_record(&e, symbol_short!("default"), user.clone(), period, record, archetype);
+
+        e.storage().temporary().remove(&guard_key);
+    }
+
+    pub fn mint_campaign_wrap(
+        e: Env,
+        campaign: Symbol,
+        user: Address,
+        period: WrapPeriod,
+        archetype: Symbol,
+        data_hash: BytesN<32>,
+        signature: BytesN<64>,
+        metadata: Option<String>,
+    ) {
+        Self::validate_period(&e, period);
+
+        // Verify the campaign has been registered (except default)
+        let default_campaign = symbol_short!("default");
+        if campaign != default_campaign {
+            let campaigns: soroban_sdk::Vec<Symbol> = e
+                .storage()
+                .instance()
+                .get(&DataKey::Campaigns)
+                .unwrap_or_else(|| soroban_sdk::Vec::new(&e));
+            if !campaigns.contains(&campaign) {
+                panic_with_error!(e, ContractError::CampaignNotFound);
+            }
+        } else {
+            return Self::mint_wrap(e, user, period, archetype, data_hash, signature, metadata);
+        }
+
+        user.require_auth();
+
+        let guard_key = DataKey::MintGuard(user.clone());
+        if e.storage().temporary().has(&guard_key) {
+            panic_with_error!(e, ContractError::Unauthorized);
+        }
+        e.storage().temporary().set(&guard_key, &true);
+
+        let admin_pubkey: BytesN<32> = e
+            .storage()
+            .instance()
+            .get(&DataKey::AdminPubKey)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+
+        if data_hash == BytesN::from_array(&e, &[0u8; 32]) {
+            panic_with_error!(e, ContractError::InvalidDataHash);
+        }
+
+        // Payload: contract_id ‖ campaign ‖ user ‖ period ‖ archetype ‖ data_hash ‖ metadata
+        let mut payload = Bytes::new(&e);
+        payload.append(&e.current_contract_address().to_xdr(&e));
+        payload.append(&campaign.clone().to_xdr(&e));
+        payload.append(&user.clone().to_xdr(&e));
+        payload.append(&period.to_xdr(&e));
+        payload.append(&archetype.clone().to_xdr(&e));
+        payload.append(&data_hash.clone().to_xdr(&e));
+        payload.append(&metadata.clone().to_xdr(&e));
+
+        e.crypto()
+            .ed25519_verify(&admin_pubkey, &payload, &signature);
+
+        let wrap_key = DataKey::CampaignWrap(campaign.clone(), user.clone(), period);
+        if e.storage().persistent().has(&wrap_key) {
+            panic_with_error!(e, ContractError::WrapAlreadyExists);
+        }
+
+        let record = WrapRecord {
+            timestamp: e.ledger().timestamp(),
+            data_hash,
+            archetype: archetype.clone(),
+            period,
+            image_uri: String::from_str(&e, ""),
+            metadata,
+        };
+
+        Self::persist_wrap_record(&e, campaign, user.clone(), period, record, archetype);
 
         e.storage().temporary().remove(&guard_key);
     }
@@ -220,11 +307,13 @@ impl StellarWrapContract {
     pub fn claim_wrap(
         e: Env,
         user: Address,
-        period: u64,
+        period: WrapPeriod,
         archetype: Symbol,
         data_hash: BytesN<32>,
         proof: soroban_sdk::Vec<BytesN<32>>,
+        metadata: Option<String>,
     ) {
+        Self::validate_period(&e, period);
         user.require_auth();
 
         let guard_key = DataKey::MintGuard(user.clone());
@@ -248,7 +337,7 @@ impl StellarWrapContract {
             .get(&DataKey::MerkleRoot(period))
             .unwrap_or_else(|| panic_with_error!(e, ContractError::MerkleRootNotSet));
 
-        let leaf = compute_merkle_leaf(&e, &user, period, &archetype, &data_hash);
+        let leaf = compute_merkle_leaf(&e, &user, period, &archetype, &data_hash, &metadata);
         if !verify_merkle_proof(&e, &root, &leaf, &proof) {
             panic_with_error!(e, ContractError::InvalidMerkleProof);
         }
@@ -269,6 +358,7 @@ impl StellarWrapContract {
             archetype: archetype.clone(),
             period,
             image_uri: String::from_str(&e, ""),
+            metadata,
         };
 
         let ttl_one_year = 17280 * 365;
@@ -277,7 +367,7 @@ impl StellarWrapContract {
             .persistent()
             .extend_ttl(&claim_key, ttl_one_year, ttl_one_year);
 
-        Self::persist_wrap_record(&e, user.clone(), period, record, archetype);
+        Self::persist_wrap_record(&e, symbol_short!("default"), user.clone(), period, record, archetype);
 
         e.storage().temporary().remove(&guard_key);
     }
@@ -375,21 +465,90 @@ impl StellarWrapContract {
             .unwrap_or(SCHEMA_VERSION)
     }
 
-    fn v1_to_v2(e: &Env, v1: &WrapRecordV1) -> WrapRecord {
+    fn validate_period(e: &Env, period: WrapPeriod) {
+        if period >= 1000 && period <= 9999 {
+            return;
+        }
+        let month = period % 100;
+        let year = period / 100;
+        if month >= 1 && month <= 12 && year >= 1000 && year <= 9999 {
+            return;
+        }
+        panic_with_error!(e, ContractError::InvalidPeriod);
+    }
+
+    fn insert_sorted(e: &Env, vec: &soroban_sdk::Vec<u64>, val: u64) -> soroban_sdk::Vec<u64> {
+        let mut result = soroban_sdk::Vec::new(e);
+        let mut inserted = false;
+        for i in 0..vec.len() {
+            let item = vec.get(i).unwrap();
+            if item == val {
+                return vec.clone(); // already exists, no need to insert
+            }
+            if !inserted && item > val {
+                result.push_back(val);
+                inserted = true;
+            }
+            result.push_back(item);
+        }
+        if !inserted {
+            result.push_back(val);
+        }
+        result
+    }
+
+    fn remove_period(e: &Env, vec: &soroban_sdk::Vec<u64>, val: u64) -> soroban_sdk::Vec<u64> {
+        let mut result = soroban_sdk::Vec::new(e);
+        for i in 0..vec.len() {
+            let item = vec.get(i).unwrap();
+            if item != val {
+                result.push_back(item);
+            }
+        }
+        result
+    }
+
+    fn v1_to_v3(e: &Env, v1: &WrapRecordV1) -> WrapRecord {
         WrapRecord {
             timestamp: v1.timestamp,
             data_hash: v1.data_hash.clone(),
             archetype: v1.archetype.clone(),
             period: v1.period,
             image_uri: String::from_str(e, ""),
+            metadata: None,
+        }
+    }
+
+    fn v2_to_v3(_e: &Env, v2: &WrapRecordV2) -> WrapRecord {
+        WrapRecord {
+            timestamp: v2.timestamp,
+            data_hash: v2.data_hash.clone(),
+            archetype: v2.archetype.clone(),
+            period: v2.period,
+            image_uri: v2.image_uri.clone(),
+            metadata: None,
         }
     }
 
     fn migrate_v1_record(e: &Env, user: &Address, period: u64, v1: WrapRecordV1) -> WrapRecord {
-        let migrated = Self::v1_to_v2(e, &v1);
+        let migrated = Self::v1_to_v3(e, &v1);
         let wrap_key = DataKey::Wrap(user.clone(), period);
         let ttl_one_year = 17280 * 365;
-        e.storage().persistent().set(&wrap_key, &migrated);
+        let schema = Self::schema_version(e);
+        if schema < SCHEMA_VERSION_V2 {
+            e.storage().persistent().set(&wrap_key, &v1);
+        } else if schema < SCHEMA_VERSION_V3 {
+            let v2 = WrapRecordV2 {
+                timestamp: v1.timestamp,
+                data_hash: v1.data_hash.clone(),
+                archetype: v1.archetype.clone(),
+                period: v1.period,
+                image_uri: String::from_str(e, ""),
+            };
+            e.storage().persistent().set(&wrap_key, &v2);
+        } else {
+            e.storage().persistent().set(&wrap_key, &migrated);
+        }
         e.storage()
             .persistent()
             .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
@@ -400,50 +559,133 @@ impl StellarWrapContract {
         migrated
     }
 
+    fn migrate_v2_record(e: &Env, user: &Address, period: u64, v2: WrapRecordV2) -> WrapRecord {
+        let migrated = Self::v2_to_v3(e, &v2);
+        let wrap_key = DataKey::Wrap(user.clone(), period);
+        let ttl_one_year = 17280 * 365;
+        let schema = Self::schema_version(e);
+        if schema < SCHEMA_VERSION_V3 {
+            e.storage().persistent().set(&wrap_key, &v2);
+        } else {
+            e.storage().persistent().set(&wrap_key, &migrated);
+        }
+        e.storage()
+            .persistent()
+            .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
+        e.events().publish(
+            (symbol_short!("migrat"), user.clone(), period),
+            v2.archetype,
+        );
+        migrated
+    }
+
     fn persist_wrap_record(
         e: &Env,
+        campaign: Symbol,
         user: Address,
         period: u64,
         record: WrapRecord,
         archetype: Symbol,
     ) {
-        let wrap_key = DataKey::Wrap(user.clone(), period);
         let ttl_one_year = 17280 * 365;
-        if Self::schema_version(e) < SCHEMA_VERSION_V2 {
-            let v1 = WrapRecordV1 {
-                timestamp: record.timestamp,
-                data_hash: record.data_hash,
-                archetype: record.archetype.clone(),
-                period: record.period,
-            };
-            e.storage().persistent().set(&wrap_key, &v1);
-        } else {
-            e.storage().persistent().set(&wrap_key, &record);
-        }
-        e.storage()
-            .persistent()
-            .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
+        let default_campaign = symbol_short!("default");
 
-        let count_key = DataKey::WrapCount(user.clone());
-        let current_count: u32 = e.storage().persistent().get(&count_key).unwrap_or(0);
-        e.storage()
-            .persistent()
-            .set(&count_key, &(current_count + 1));
-        e.storage()
-            .persistent()
-            .extend_ttl(&count_key, ttl_one_year, ttl_one_year);
-
-        let latest_key = DataKey::LatestPeriod(user.clone());
-        let current_latest: u64 = e.storage().persistent().get(&latest_key).unwrap_or(0);
-        if period > current_latest {
-            e.storage().persistent().set(&latest_key, &period);
+        if campaign == default_campaign {
+            let wrap_key = DataKey::Wrap(user.clone(), period);
+            let schema = Self::schema_version(e);
+            if schema < SCHEMA_VERSION_V2 {
+                let v1 = WrapRecordV1 {
+                    timestamp: record.timestamp,
+                    data_hash: record.data_hash,
+                    archetype: record.archetype.clone(),
+                    period: record.period,
+                };
+                e.storage().persistent().set(&wrap_key, &v1);
+            } else if schema < SCHEMA_VERSION_V3 {
+                let v2 = WrapRecordV2 {
+                    timestamp: record.timestamp,
+                    data_hash: record.data_hash,
+                    archetype: record.archetype.clone(),
+                    period: record.period,
+                    image_uri: record.image_uri.clone(),
+                };
+                e.storage().persistent().set(&wrap_key, &v2);
+            } else {
+                e.storage().persistent().set(&wrap_key, &record);
+            }
             e.storage()
                 .persistent()
-                .extend_ttl(&latest_key, ttl_one_year, ttl_one_year);
-        }
+                .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
 
-        e.events()
-            .publish((symbol_short!("mint"), user, period), archetype);
+            let count_key = DataKey::WrapCount(user.clone());
+            let current_count: u32 = e.storage().persistent().get(&count_key).unwrap_or(0);
+            e.storage()
+                .persistent()
+                .set(&count_key, &(current_count + 1));
+            e.storage()
+                .persistent()
+                .extend_ttl(&count_key, ttl_one_year, ttl_one_year);
+
+            let latest_key = DataKey::LatestPeriod(user.clone());
+            let current_latest: u64 = e.storage().persistent().get(&latest_key).unwrap_or(0);
+            if period > current_latest {
+                e.storage().persistent().set(&latest_key, &period);
+                e.storage()
+                    .persistent()
+                    .extend_ttl(&latest_key, ttl_one_year, ttl_one_year);
+            }
+
+            // Track in period list for pagination
+            let periods_key = DataKey::UserPeriods(user.clone());
+            let periods: soroban_sdk::Vec<u64> = e.storage().persistent().get(&periods_key).unwrap_or_else(|| soroban_sdk::Vec::new(e));
+            let updated_periods = Self::insert_sorted(e, &periods, period);
+            e.storage().persistent().set(&periods_key, &updated_periods);
+            e.storage()
+                .persistent()
+                .extend_ttl(&periods_key, ttl_one_year, ttl_one_year);
+
+            e.events()
+                .publish((symbol_short!("mint"), user, period), archetype);
+        } else {
+            // Campaign-specific wrap
+            let wrap_key = DataKey::CampaignWrap(campaign.clone(), user.clone(), period);
+            e.storage().persistent().set(&wrap_key, &record);
+            e.storage()
+                .persistent()
+                .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
+
+            let count_key = DataKey::CampaignWrapCount(campaign.clone(), user.clone());
+            let current_count: u32 = e.storage().persistent().get(&count_key).unwrap_or(0);
+            e.storage()
+                .persistent()
+                .set(&count_key, &(current_count + 1));
+            e.storage()
+                .persistent()
+                .extend_ttl(&count_key, ttl_one_year, ttl_one_year);
+
+            let latest_key = DataKey::CampaignLatestPeriod(campaign.clone(), user.clone());
+            let current_latest: u64 = e.storage().persistent().get(&latest_key).unwrap_or(0);
+            if period > current_latest {
+                e.storage().persistent().set(&latest_key, &period);
+                e.storage()
+                    .persistent()
+                    .extend_ttl(&latest_key, ttl_one_year, ttl_one_year);
+            }
+
+            // Track in period list for campaign pagination
+            let periods_key = DataKey::CampaignUserPeriods(campaign.clone(), user.clone());
+            let periods: soroban_sdk::Vec<u64> = e.storage().persistent().get(&periods_key).unwrap_or_else(|| soroban_sdk::Vec::new(e));
+            let updated_periods = Self::insert_sorted(e, &periods, period);
+            e.storage().persistent().set(&periods_key, &updated_periods);
+            e.storage()
+                .persistent()
+                .extend_ttl(&periods_key, ttl_one_year, ttl_one_year);
+
+            e.events().publish(
+                (symbol_short!("campaign"), symbol_short!("mint"), campaign, user, period),
+                archetype,
+            );
+        }
     }
 
     fn load_wrap_record(e: &Env, user: &Address, period: u64) -> Option<WrapRecord> {
@@ -455,14 +697,38 @@ impl StellarWrapContract {
                 .storage()
                 .persistent()
                 .get::<_, WrapRecordV1>(&wrap_key)
-                .map(|v1| Self::v1_to_v2(e, &v1));
+                .map(|v1| Self::v1_to_v3(e, &v1));
         }
 
-        // After migration, unread v1 records must be tried before v2 deserialization.
+        if schema < SCHEMA_VERSION_V3 {
+            if let Some(v1) = e.storage().persistent().get::<_, WrapRecordV1>(&wrap_key) {
+                return Some(Self::migrate_v1_record(e, user, period, v1));
+            }
+            return e
+                .storage()
+                .persistent()
+                .get::<_, WrapRecordV2>(&wrap_key)
+                .map(|v2| Self::v2_to_v3(e, &v2));
+        }
+
+        // Try V3 first — if a V3 record is stored, we must read it as V3.
+        // Reading a V3 record as V1/V2 would succeed but silently drop new fields (e.g. metadata).
+        if let Some(v3) = e.storage().persistent().get::<_, WrapRecord>(&wrap_key) {
+            return Some(v3);
+        }
+        // Fall back to legacy deserialization for records written before V3 migration.
         if let Some(v1) = e.storage().persistent().get::<_, WrapRecordV1>(&wrap_key) {
             return Some(Self::migrate_v1_record(e, user, period, v1));
         }
+        if let Some(v2) = e.storage().persistent().get::<_, WrapRecordV2>(&wrap_key) {
+            return Some(Self::migrate_v2_record(e, user, period, v2));
+        }
 
+        None
+    }
+
+    fn load_campaign_wrap_record(e: &Env, campaign: &Symbol, user: &Address, period: u64) -> Option<WrapRecord> {
+        let wrap_key = DataKey::CampaignWrap(campaign.clone(), user.clone(), period);
         e.storage().persistent().get::<_, WrapRecord>(&wrap_key)
     }
 
@@ -496,11 +762,13 @@ impl StellarWrapContract {
     pub fn update_wrap(
         e: Env,
         user: Address,
-        period: u64,
+        period: WrapPeriod,
         new_data_hash: BytesN<32>,
         new_archetype: Symbol,
         signature: BytesN<64>,
+        new_metadata: Option<String>,
     ) {
+        Self::validate_period(&e, period);
         let admin: Address = e
             .storage()
             .instance()
@@ -518,13 +786,14 @@ impl StellarWrapContract {
             panic_with_error!(e, ContractError::InvalidDataHash);
         }
 
-        // Payload: contract_id ‖ user ‖ period ‖ new_archetype ‖ new_data_hash
+        // Payload: contract_id ‖ user ‖ period ‖ new_archetype ‖ new_data_hash ‖ new_metadata
         let mut payload = Bytes::new(&e);
         payload.append(&e.current_contract_address().to_xdr(&e));
         payload.append(&user.clone().to_xdr(&e));
         payload.append(&period.to_xdr(&e));
         payload.append(&new_archetype.clone().to_xdr(&e));
         payload.append(&new_data_hash.clone().to_xdr(&e));
+        payload.append(&new_metadata.clone().to_xdr(&e));
         e.crypto()
             .ed25519_verify(&admin_pubkey, &payload, &signature);
 
@@ -538,6 +807,7 @@ impl StellarWrapContract {
             archetype: new_archetype.clone(),
             period,
             image_uri: existing.image_uri,
+            metadata: new_metadata,
         };
 
         let ttl_one_year = 17280 * 365;
@@ -549,6 +819,15 @@ impl StellarWrapContract {
                 period: updated.period,
             };
             e.storage().persistent().set(&wrap_key, &v1);
+        } else if Self::schema_version(&e) < SCHEMA_VERSION_V3 {
+            let v2 = WrapRecordV2 {
+                timestamp: updated.timestamp,
+                data_hash: updated.data_hash.clone(),
+                archetype: updated.archetype.clone(),
+                period: updated.period,
+                image_uri: updated.image_uri.clone(),
+            };
+            e.storage().persistent().set(&wrap_key, &v2);
         } else {
             e.storage().persistent().set(&wrap_key, &updated);
         }
@@ -558,6 +837,76 @@ impl StellarWrapContract {
 
         e.events()
             .publish((symbol_short!("update"), user, period), new_archetype);
+    }
+
+    pub fn update_campaign_wrap(
+        e: Env,
+        campaign: Symbol,
+        user: Address,
+        period: WrapPeriod,
+        new_data_hash: BytesN<32>,
+        new_archetype: Symbol,
+        signature: BytesN<64>,
+        new_metadata: Option<String>,
+    ) {
+        Self::validate_period(&e, period);
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+        admin.require_auth();
+
+        let default_campaign = symbol_short!("default");
+        if campaign == default_campaign {
+            return Self::update_wrap(e, user, period, new_data_hash, new_archetype, signature, new_metadata);
+        }
+
+        let admin_pubkey: BytesN<32> = e
+            .storage()
+            .instance()
+            .get(&DataKey::AdminPubKey)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+
+        if new_data_hash == BytesN::from_array(&e, &[0u8; 32]) {
+            panic_with_error!(e, ContractError::InvalidDataHash);
+        }
+
+        // Payload: contract_id ‖ campaign ‖ user ‖ period ‖ new_archetype ‖ new_data_hash ‖ new_metadata
+        let mut payload = Bytes::new(&e);
+        payload.append(&e.current_contract_address().to_xdr(&e));
+        payload.append(&campaign.clone().to_xdr(&e));
+        payload.append(&user.clone().to_xdr(&e));
+        payload.append(&period.to_xdr(&e));
+        payload.append(&new_archetype.clone().to_xdr(&e));
+        payload.append(&new_data_hash.clone().to_xdr(&e));
+        payload.append(&new_metadata.clone().to_xdr(&e));
+        e.crypto()
+            .ed25519_verify(&admin_pubkey, &payload, &signature);
+
+        let wrap_key = DataKey::CampaignWrap(campaign.clone(), user.clone(), period);
+        let existing: WrapRecord = Self::load_campaign_wrap_record(&e, &campaign, &user, period)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::WrapNotFound));
+
+        let updated = WrapRecord {
+            timestamp: existing.timestamp, // preserve original timestamp
+            data_hash: new_data_hash,
+            archetype: new_archetype.clone(),
+            period,
+            image_uri: existing.image_uri,
+            metadata: new_metadata,
+        };
+
+        let ttl_one_year = 17280 * 365;
+        e.storage().persistent().set(&wrap_key, &updated);
+        e.storage()
+            .persistent()
+            .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
+
+        e.events().publish(
+            (symbol_short!("campaign"), symbol_short!("update"), campaign, user, period),
+            new_archetype,
+        );
     }
 
     /// Admin-only revocation for incorrect or fraudulent records.
@@ -584,8 +933,56 @@ impl StellarWrapContract {
                 .set(&count_key, &(current_count - 1));
         }
 
+        // Remove period from period tracker
+        let periods_key = DataKey::UserPeriods(user.clone());
+        if let Some(periods) = e.storage().persistent().get::<_, soroban_sdk::Vec<u64>>(&periods_key) {
+            let updated_periods = Self::remove_period(&e, &periods, period);
+            e.storage().persistent().set(&periods_key, &updated_periods);
+        }
+
         e.events()
             .publish((symbol_short!("revoke"), user, period), true);
+    }
+
+    pub fn revoke_campaign_wrap(e: Env, campaign: Symbol, user: Address, period: u64) {
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+        admin.require_auth();
+
+        let default_campaign = symbol_short!("default");
+        if campaign == default_campaign {
+            return Self::revoke_wrap(e, user, period);
+        }
+
+        let wrap_key = DataKey::CampaignWrap(campaign.clone(), user.clone(), period);
+        if !e.storage().persistent().has(&wrap_key) {
+            panic_with_error!(e, ContractError::WrapNotFound);
+        }
+
+        e.storage().persistent().remove(&wrap_key);
+
+        let count_key = DataKey::CampaignWrapCount(campaign.clone(), user.clone());
+        let current_count: u32 = e.storage().persistent().get(&count_key).unwrap_or(0);
+        if current_count > 0 {
+            e.storage()
+                .persistent()
+                .set(&count_key, &(current_count - 1));
+        }
+
+        // Remove period from campaign period tracker
+        let periods_key = DataKey::CampaignUserPeriods(campaign.clone(), user.clone());
+        if let Some(periods) = e.storage().persistent().get::<_, soroban_sdk::Vec<u64>>(&periods_key) {
+            let updated_periods = Self::remove_period(&e, &periods, period);
+            e.storage().persistent().set(&periods_key, &updated_periods);
+        }
+
+        e.events().publish(
+            (symbol_short!("campaign"), symbol_short!("revoke"), campaign, user, period),
+            true,
+        );
     }
 
     // --- Read Functions ---
@@ -598,11 +995,28 @@ impl StellarWrapContract {
     ///
     /// # Returns
     /// `Some(WrapRecord)` if a record exists, `None` otherwise.
-    pub fn get_wrap(e: Env, user: Address, period: u64) -> Option<WrapRecord> {
+    pub fn get_wrap(e: Env, user: Address, period: WrapPeriod) -> Option<WrapRecord> {
         if Self::user_is_opted_out(&e, &user) {
             return None;
         }
         Self::load_wrap_record(&e, &user, period)
+    }
+
+    pub fn get_campaign_wrap(
+        e: Env,
+        campaign: Symbol,
+        user: Address,
+        period: WrapPeriod,
+    ) -> Option<WrapRecord> {
+        if Self::user_is_opted_out(&e, &user) {
+            return None;
+        }
+        let default_campaign = symbol_short!("default");
+        if campaign == default_campaign {
+            Self::load_wrap_record(&e, &user, period)
+        } else {
+            Self::load_campaign_wrap_record(&e, &campaign, &user, period)
+        }
     }
 
     /// Return the total number of wrap records minted for a user (their SBT balance).
@@ -621,6 +1035,18 @@ impl StellarWrapContract {
             .unwrap_or(0) as i128
     }
 
+    pub fn campaign_balance_of(e: Env, campaign: Symbol, id: Address) -> i128 {
+        let default_campaign = symbol_short!("default");
+        if campaign == default_campaign {
+            return Self::balance_of(e, id);
+        }
+        let count_key = DataKey::CampaignWrapCount(campaign, id);
+        e.storage()
+            .persistent()
+            .get::<_, u32>(&count_key)
+            .unwrap_or(0) as i128
+    }
+
     /// Verify that the SHA-256 hash of `data` matches the `data_hash` stored in a wrap record.
     ///
     /// Useful for off-chain integrity checks: hash the original JSON off-chain, then call this
@@ -633,8 +1059,29 @@ impl StellarWrapContract {
     ///
     /// # Returns
     /// `true` if the hash matches, `false` if it does not or if no record exists.
-    pub fn verify_data(e: Env, user: Address, period: u64, data: Bytes) -> bool {
+    pub fn verify_data(e: Env, user: Address, period: WrapPeriod, data: Bytes) -> bool {
         match Self::load_wrap_record(&e, &user, period) {
+            Some(record) => {
+                let computed_hash = e.crypto().sha256(&data);
+                record.data_hash == BytesN::from_array(&e, &computed_hash.to_array())
+            }
+            None => false,
+        }
+    }
+
+    pub fn verify_campaign_data(
+        e: Env,
+        campaign: Symbol,
+        user: Address,
+        period: WrapPeriod,
+        data: Bytes,
+    ) -> bool {
+        let record_opt = if campaign == symbol_short!("default") {
+            Self::load_wrap_record(&e, &user, period)
+        } else {
+            Self::load_campaign_wrap_record(&e, &campaign, &user, period)
+        };
+        match record_opt {
             Some(record) => {
                 let computed_hash = e.crypto().sha256(&data);
                 record.data_hash == BytesN::from_array(&e, &computed_hash.to_array())
@@ -659,6 +1106,19 @@ impl StellarWrapContract {
         Self::load_wrap_record(&e, &user, period)
     }
 
+    pub fn get_campaign_latest_wrap(e: Env, campaign: Symbol, user: Address) -> Option<WrapRecord> {
+        if Self::user_is_opted_out(&e, &user) {
+            return None;
+        }
+        let default_campaign = symbol_short!("default");
+        if campaign == default_campaign {
+            return Self::get_latest_wrap(e, user);
+        }
+        let latest_key = DataKey::CampaignLatestPeriod(campaign.clone(), user.clone());
+        let period: u64 = e.storage().persistent().get(&latest_key)?;
+        Self::load_campaign_wrap_record(&e, &campaign, &user, period)
+    }
+
     /// Extend the TTL (time-to-live) for all persistent storage entries belonging to a user.
     ///
     /// Soroban persistent storage entries expire after their TTL lapses. This function lets
@@ -667,7 +1127,7 @@ impl StellarWrapContract {
     /// # Parameters
     /// - `user`: The address whose storage entries will be extended.
     /// - `period`: The specific wrap period whose record TTL will be extended.
-    pub fn extend_ttl(e: Env, user: Address, period: u64) {
+    pub fn extend_ttl(e: Env, user: Address, period: WrapPeriod) {
         let wrap_key = DataKey::Wrap(user.clone(), period);
         let ttl = 17280 * 365; // ~1 year in ledgers
 
@@ -680,12 +1140,163 @@ impl StellarWrapContract {
             e.storage().persistent().extend_ttl(&count_key, ttl, ttl);
         }
 
-        let latest_key = DataKey::LatestPeriod(user);
+        let latest_key = DataKey::LatestPeriod(user.clone());
         if e.storage().persistent().has(&latest_key) {
             e.storage().persistent().extend_ttl(&latest_key, ttl, ttl);
         }
 
+        let periods_key = DataKey::UserPeriods(user);
+        if e.storage().persistent().has(&periods_key) {
+            e.storage().persistent().extend_ttl(&periods_key, ttl, ttl);
+        }
+
         e.storage().instance().extend_ttl(ttl, ttl);
+    }
+
+    pub fn extend_campaign_ttl(e: Env, campaign: Symbol, user: Address, period: WrapPeriod) {
+        let default_campaign = symbol_short!("default");
+        if campaign == default_campaign {
+            return Self::extend_ttl(e, user, period);
+        }
+        let wrap_key = DataKey::CampaignWrap(campaign.clone(), user.clone(), period);
+        let ttl = 17280 * 365;
+
+        if e.storage().persistent().has(&wrap_key) {
+            e.storage().persistent().extend_ttl(&wrap_key, ttl, ttl);
+        }
+
+        let count_key = DataKey::CampaignWrapCount(campaign.clone(), user.clone());
+        if e.storage().persistent().has(&count_key) {
+            e.storage().persistent().extend_ttl(&count_key, ttl, ttl);
+        }
+
+        let latest_key = DataKey::CampaignLatestPeriod(campaign.clone(), user.clone());
+        if e.storage().persistent().has(&latest_key) {
+            e.storage().persistent().extend_ttl(&latest_key, ttl, ttl);
+        }
+
+        let periods_key = DataKey::CampaignUserPeriods(campaign, user);
+        if e.storage().persistent().has(&periods_key) {
+            e.storage().persistent().extend_ttl(&periods_key, ttl, ttl);
+        }
+
+        e.storage().instance().extend_ttl(ttl, ttl);
+    }
+
+    pub fn get_wraps_paginated(
+        e: Env,
+        user: Address,
+        offset: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<WrapRecord> {
+        let max_limit = 20;
+        let actual_limit = if limit > max_limit { max_limit } else { limit };
+        let mut result = soroban_sdk::Vec::new(&e);
+
+        if actual_limit == 0 || Self::user_is_opted_out(&e, &user) {
+            return result;
+        }
+
+        let periods_key = DataKey::UserPeriods(user.clone());
+        let periods: soroban_sdk::Vec<u64> = match e.storage().persistent().get(&periods_key) {
+            Some(p) => p,
+            None => return result,
+        };
+
+        let len = periods.len();
+        if offset >= len {
+            return result;
+        }
+
+        let end = if offset + actual_limit > len {
+            len
+        } else {
+            offset + actual_limit
+        };
+
+        for i in offset..end {
+            let period = periods.get(i).unwrap();
+            if let Some(record) = Self::load_wrap_record(&e, &user, period) {
+                result.push_back(record);
+            }
+        }
+
+        result
+    }
+
+    pub fn get_campaign_wraps_paginated(
+        e: Env,
+        campaign: Symbol,
+        user: Address,
+        offset: u32,
+        limit: u32,
+    ) -> soroban_sdk::Vec<WrapRecord> {
+        let default_campaign = symbol_short!("default");
+        if campaign == default_campaign {
+            return Self::get_wraps_paginated(e, user, offset, limit);
+        }
+
+        let max_limit = 20;
+        let actual_limit = if limit > max_limit { max_limit } else { limit };
+        let mut result = soroban_sdk::Vec::new(&e);
+
+        if actual_limit == 0 || Self::user_is_opted_out(&e, &user) {
+            return result;
+        }
+
+        let periods_key = DataKey::CampaignUserPeriods(campaign.clone(), user.clone());
+        let periods: soroban_sdk::Vec<u64> = match e.storage().persistent().get(&periods_key) {
+            Some(p) => p,
+            None => return result,
+        };
+
+        let len = periods.len();
+        if offset >= len {
+            return result;
+        }
+
+        let end = if offset + actual_limit > len {
+            len
+        } else {
+            offset + actual_limit
+        };
+
+        for i in offset..end {
+            let period = periods.get(i).unwrap();
+            if let Some(record) = Self::load_campaign_wrap_record(&e, &campaign, &user, period) {
+                result.push_back(record);
+            }
+        }
+
+        result
+    }
+
+    pub fn create_campaign(e: Env, campaign: Symbol) {
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+        admin.require_auth();
+
+        let mut campaigns: soroban_sdk::Vec<Symbol> = e
+            .storage()
+            .instance()
+            .get(&DataKey::Campaigns)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&e));
+
+        if !campaigns.contains(&campaign) {
+            campaigns.push_back(campaign.clone());
+            e.storage().instance().set(&DataKey::Campaigns, &campaigns);
+            e.events().publish((symbol_short!("campaign"), symbol_short!("create")), campaign);
+        }
+    }
+
+    pub fn get_campaigns(e: Env) -> soroban_sdk::Vec<Symbol> {
+        e.storage()
+            .instance()
+            .get(&DataKey::Campaigns)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&e))
     }
 
     /// Return the current admin address, or `None` if the contract is not yet initialized.
