@@ -1,4 +1,4 @@
-#![no_std]
+﻿#![no_std]
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, panic_with_error, symbol_short, xdr::ToXdr, Address,
@@ -509,8 +509,10 @@ impl StellarWrapContract {
                 period: record.period,
             };
             e.storage().persistent().set(&wrap_key, &v1);
+            e.storage().persistent().set(&DataKey::WrapFormat(user.clone(), period), &SCHEMA_VERSION);
         } else {
             e.storage().persistent().set(&wrap_key, &record);
+            e.storage().persistent().set(&DataKey::WrapFormat(user.clone(), period), &SCHEMA_VERSION_V2);
         }
         e.storage()
             .persistent()
@@ -558,19 +560,15 @@ impl StellarWrapContract {
 
     fn load_wrap_record(e: &Env, user: &Address, period: u64) -> Option<WrapRecord> {
         let wrap_key = DataKey::Wrap(user.clone(), period);
-        let schema = Self::schema_version(e);
+        let fmt_key = DataKey::WrapFormat(user.clone(), period);
+        let fmt: u32 = e.storage().persistent().get(&fmt_key).unwrap_or(1);
 
-        if schema < SCHEMA_VERSION_V2 {
+        if fmt < SCHEMA_VERSION_V2 {
             return e
                 .storage()
                 .persistent()
                 .get::<_, WrapRecordV1>(&wrap_key)
                 .map(|v1| Self::v1_to_v2(e, &v1));
-        }
-
-        // After migration, unread v1 records must be tried before v2 deserialization.
-        if let Some(v1) = e.storage().persistent().get::<_, WrapRecordV1>(&wrap_key) {
-            return Some(Self::migrate_v1_record(e, user, period, v1));
         }
 
         e.storage().persistent().get::<_, WrapRecord>(&wrap_key)
@@ -603,6 +601,65 @@ impl StellarWrapContract {
     /// - [`ContractError::InvalidDataHash`] if `new_data_hash` is all-zero bytes.
     /// - [`ContractError::InvalidSignature`] if the Ed25519 signature is invalid.
     /// - [`ContractError::WrapNotFound`] if no wrap exists for `(user, period)`.
+
+    /// Set or update the image URI for an existing wrap record (admin-only).
+    ///
+    /// Supported URI schemes: `ipfs://`, `ar://`, `https://`.
+    ///
+    /// # Parameters
+    /// - `user`: The address whose wrap record is being updated.
+    /// - `period`: The period identifier of the record to update.
+    /// - `image_uri`: URI pointing to the wrap card image (max 256 chars).
+    ///
+    /// # Authorization
+    /// Requires authorization from the **admin**.
+    ///
+    /// # Panics
+    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
+    /// - [`ContractError::Unauthorized`] if the caller is not the admin.
+    /// - [`ContractError::WrapNotFound`] if no wrap exists for `(user, period)`.
+    /// - [`ContractError::StorageDepositExceeded`] if `image_uri` exceeds 256 characters.
+    pub fn set_wrap_image(e: Env, user: Address, period: u64, image_uri: String) {
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+        admin.require_auth();
+        if image_uri.len() > 256 {
+            panic_with_error!(e, ContractError::StorageDepositExceeded);
+        }
+        let wrap_key = DataKey::Wrap(user.clone(), period);
+        let ttl_one_year = 17280 * 365;
+        let schema = Self::schema_version(&e);
+        // Read and write back in the correct schema format to avoid deserialization mismatch.
+        if schema < SCHEMA_VERSION_V2 {
+            // Schema v1: record stored as WrapRecordV1; image_uri is not persisted.
+            // Confirm record exists, then no-op on storage (image not supported yet).
+            let _exists: WrapRecordV1 = e
+                .storage()
+                .persistent()
+                .get(&wrap_key)
+                .unwrap_or_else(|| panic_with_error!(e, ContractError::WrapNotFound));
+        } else {
+            // Schema v2: read as WrapRecord, update image_uri, write back.
+            let mut record: WrapRecord = e
+                .storage()
+                .persistent()
+                .get(&wrap_key)
+                .unwrap_or_else(|| panic_with_error!(e, ContractError::WrapNotFound));
+            record.image_uri = image_uri.clone();
+            e.storage().persistent().set(&wrap_key, &record);
+            e.storage().persistent().set(&DataKey::WrapFormat(user.clone(), period), &SCHEMA_VERSION_V2);
+            e.storage()
+                .persistent()
+                .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
+        }
+        e.events().publish(
+            (symbol_short!("image_set"), user, period),
+            image_uri,
+        );
+    }
     pub fn update_wrap(
         e: Env,
         user: Address,

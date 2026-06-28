@@ -1,4 +1,4 @@
-#![cfg(test)]
+﻿#![cfg(test)]
 extern crate std;
 
 use super::*;
@@ -1780,4 +1780,102 @@ fn test_admin_can_revoke_opted_out_wrap() {
     client.opt_out(&user);
     client.revoke_wrap(&user, &period);
     assert_eq!(client.balance_of(&user), 0);
+}
+
+// --- Issue #97: set_wrap_image tests -------------------------------------------
+
+#[test]
+
+// --- Issue #97: set_wrap_image tests -------------------------------------------
+
+#[test]
+fn test_mint_without_image_has_empty_uri() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[90u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let period = 202506u64;
+    let archetype = symbol_short!("arch");
+    let hash = BytesN::from_array(&env, &[90u8; 32]);
+    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash);
+    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
+
+    let wrap = client.get_wrap(&user, &period).unwrap();
+    assert_eq!(wrap.image_uri, String::from_str(&env, ""), "image_uri must default to empty string");
+}
+
+#[test]
+fn test_set_wrap_image_after_mint_and_get_wrap_returns_updated_uri() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[91u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    // Migrate to v2 so image_uri is stored and returned
+    client.migrate(&SCHEMA_VERSION, &SCHEMA_VERSION_V2);
+
+    let period = 202507u64;
+    let archetype = symbol_short!("arch");
+    let hash = BytesN::from_array(&env, &[91u8; 32]);
+    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash);
+    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
+
+    let ipfs_uri = String::from_str(&env, "ipfs://QmYwAPJzv5CZsnAzt8auV39s1XR7XtaFj8PRGpdGQFUdBz");
+    client.set_wrap_image(&user, &period, &ipfs_uri);
+
+    let wrap = client.get_wrap(&user, &period).unwrap();
+    assert_eq!(wrap.image_uri, ipfs_uri, "get_wrap must return updated image_uri");
+
+    let events = env.events().all();
+    let last = events.last().unwrap();
+    let (_, topics, data) = last;
+    let topic_0: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    let topic_1: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    let topic_2: u64 = topics.get(2).unwrap().try_into_val(&env).unwrap();
+    let ev_uri: String = data.try_into_val(&env).unwrap();
+    assert_eq!(topic_0, symbol_short!("image_set"));
+    assert_eq!(topic_1, user);
+    assert_eq!(topic_2, period);
+    assert_eq!(ev_uri, ipfs_uri);
+}
+
+#[test]
+#[should_panic]
+fn test_set_wrap_image_oversized_uri_rejected() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[92u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let period = 202508u64;
+    let archetype = symbol_short!("arch");
+    let hash = BytesN::from_array(&env, &[92u8; 32]);
+    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash);
+    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
+
+    // 257-character URI (7 + 250) -- must be rejected
+    let bad_uri = String::from_str(&env, "ipfs://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    client.set_wrap_image(&user, &period, &bad_uri);
 }
