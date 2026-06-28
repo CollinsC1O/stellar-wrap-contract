@@ -1666,3 +1666,69 @@ fn test_admin_can_revoke_opted_out_wrap() {
     client.revoke_wrap(&user, &period);
     assert_eq!(client.balance_of(&user), 0);
 }
+
+// ─── Issue #89: get_wrap and balance_of non-existent user/period tests ──────
+
+#[test]
+fn test_get_wrap_nonexistent_user_returns_none() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let pubkey = BytesN::from_array(&env, &[1u8; 32]);
+    client.initialize(&admin, &pubkey);
+
+    let nonexistent_user = Address::generate(&env);
+    let period = 2024u64;
+
+    assert!(client.get_wrap(&nonexistent_user, &period).is_none());
+}
+
+#[test]
+fn test_get_wrap_existing_user_wrong_period_returns_none() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[15u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let hash = BytesN::from_array(&env, &[42u8; 32]);
+    let archetype = symbol_short!("arch");
+    let period = 2024u64;
+
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
+
+    // User exists with period 2024, but query for period 2025 should return None
+    let wrong_period = 2025u64;
+    assert!(client.get_wrap(&user, &wrong_period).is_none());
+}
+
+#[test]
+fn test_balance_of_nonexistent_user_returns_zero() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let pubkey = BytesN::from_array(&env, &[1u8; 32]);
+    client.initialize(&admin, &pubkey);
+
+    let nonexistent_user = Address::generate(&env);
+    assert_eq!(client.balance_of(&nonexistent_user), 0);
+}
