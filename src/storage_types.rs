@@ -72,6 +72,8 @@ pub enum DataKey {
     CampaignUserPeriods(Symbol, Address),
     /// List of all campaigns created by admin
     Campaigns,
+    /// Tracks the current consecutive wrap streak for a user
+    WrapStreak(Address),
     /// Temporary, invocation-scoped reentrancy guard for mint flow
     MintGuard(Address),
     /// Merkle root for batch claims per period

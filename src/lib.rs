@@ -52,6 +52,8 @@ pub enum ContractError {
     InvalidPeriod = 12,
     /// The specified campaign was not found/registered. (code 13)
     CampaignNotFound = 13,
+    /// Storage deposit/budget exceeded (code 14)
+    StorageDepositExceeded = 14,
 }
 
 #[contract]
@@ -579,6 +581,23 @@ impl StellarWrapContract {
         migrated
     }
 
+    fn periods_are_consecutive(previous: u64, next: u64) -> bool {
+        let prev_year = previous / 100;
+        let prev_month = previous % 100;
+        let next_year = next / 100;
+        let next_month = next % 100;
+
+        if prev_month == 0 || prev_month > 12 || next_month == 0 || next_month > 12 {
+            return false;
+        }
+
+        if prev_month == 12 {
+            next_year == prev_year + 1 && next_month == 1
+        } else {
+            next_year == prev_year && next_month == prev_month + 1
+        }
+    }
+
     fn persist_wrap_record(
         e: &Env,
         campaign: Symbol,
@@ -628,6 +647,24 @@ impl StellarWrapContract {
 
             let latest_key = DataKey::LatestPeriod(user.clone());
             let current_latest: u64 = e.storage().persistent().get(&latest_key).unwrap_or(0);
+
+            // Update streak tracking
+            let streak_key = DataKey::WrapStreak(user.clone());
+            let current_streak: u32 = e.storage().persistent().get(&streak_key).unwrap_or(0);
+            let next_streak = if period > current_latest {
+                if current_latest != 0 && Self::periods_are_consecutive(current_latest, period) {
+                    current_streak.saturating_add(1)
+                } else {
+                    1
+                }
+            } else {
+                current_streak
+            };
+            e.storage().persistent().set(&streak_key, &next_streak);
+            e.storage()
+                .persistent()
+                .extend_ttl(&streak_key, ttl_one_year, ttl_one_year);
+
             if period > current_latest {
                 e.storage().persistent().set(&latest_key, &period);
                 e.storage()
@@ -1145,9 +1182,14 @@ impl StellarWrapContract {
             e.storage().persistent().extend_ttl(&latest_key, ttl, ttl);
         }
 
-        let periods_key = DataKey::UserPeriods(user);
+        let periods_key = DataKey::UserPeriods(user.clone());
         if e.storage().persistent().has(&periods_key) {
             e.storage().persistent().extend_ttl(&periods_key, ttl, ttl);
+        }
+
+        let streak_key = DataKey::WrapStreak(user);
+        if e.storage().persistent().has(&streak_key) {
+            e.storage().persistent().extend_ttl(&streak_key, ttl, ttl);
         }
 
         e.storage().instance().extend_ttl(ttl, ttl);
@@ -1297,6 +1339,17 @@ impl StellarWrapContract {
             .instance()
             .get(&DataKey::Campaigns)
             .unwrap_or_else(|| soroban_sdk::Vec::new(&e))
+    }
+
+    /// Return the current consecutive wrap streak for a user.
+    pub fn get_streak(e: Env, user: Address) -> u32 {
+        if Self::user_is_opted_out(&e, &user) {
+            return 0;
+        }
+        e.storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::WrapStreak(user))
+            .unwrap_or(0)
     }
 
     /// Return the current admin address, or `None` if the contract is not yet initialized.
