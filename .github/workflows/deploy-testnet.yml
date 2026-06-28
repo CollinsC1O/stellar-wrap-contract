@@ -13,6 +13,10 @@ on:
         description: Admin address used when initializing a fresh deployment. Defaults to deployer public key.
         required: false
         type: string
+      admin_pubkey:
+        description: Ed25519 public key used to verify wrap signatures. Defaults to STELLAR_ADMIN_PUBKEY secret.
+        required: false
+        type: string
       initialize:
         description: Initialize newly deployed contracts.
         required: false
@@ -27,8 +31,10 @@ jobs:
       WASM_PATH: target/wasm32-unknown-unknown/release/stellar_wrap_contract.wasm
       INPUT_CONTRACT_ID: ${{ github.event.inputs.contract_id }}
       INPUT_ADMIN_ADDRESS: ${{ github.event.inputs.admin_address }}
+      INPUT_ADMIN_PUBKEY: ${{ github.event.inputs.admin_pubkey }}
       INPUT_INITIALIZE: ${{ github.event.inputs.initialize }}
       CONFIGURED_CONTRACT_ID: ${{ secrets.STELLAR_TESTNET_CONTRACT_ID }}
+      CONFIGURED_ADMIN_PUBKEY: ${{ secrets.STELLAR_ADMIN_PUBKEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -61,6 +67,7 @@ jobs:
 
           CONTRACT_ID="${INPUT_CONTRACT_ID:-$CONFIGURED_CONTRACT_ID}"
           ADMIN_ADDRESS="${INPUT_ADMIN_ADDRESS:-$(stellar keys address deployer)}"
+          ADMIN_PUBKEY="${INPUT_ADMIN_PUBKEY:-$CONFIGURED_ADMIN_PUBKEY}"
           SHOULD_INITIALIZE="${INPUT_INITIALIZE:-true}"
 
           if [ -n "$CONTRACT_ID" ]; then
@@ -77,12 +84,17 @@ jobs:
             ACTION="deployed"
 
             if [ "$SHOULD_INITIALIZE" = "true" ]; then
+              if [ -z "$ADMIN_PUBKEY" ]; then
+                echo "STELLAR_ADMIN_PUBKEY or admin_pubkey input is required for fresh deployments" >&2
+                exit 1
+              fi
               stellar contract invoke \
                 --id "$CONTRACT_ID" \
                 --source deployer \
                 --network "$STELLAR_NETWORK" \
                 -- initialize \
-                --admin "$ADMIN_ADDRESS"
+                --admin "$ADMIN_ADDRESS" \
+                --admin_pubkey "$ADMIN_PUBKEY"
             fi
           fi
 

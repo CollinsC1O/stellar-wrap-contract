@@ -68,6 +68,49 @@ This project is designed to support the growth of the Stellar network by:
 
 ---
 
+## 🏗️ Architecture
+
+The diagram below shows how on-chain and off-chain components interact in the Stellar Wrap system:
+
+```mermaid
+sequenceDiagram
+    participant Backend as Backend Service
+    participant Admin as Admin Key
+    participant User as User Wallet
+    participant Contract as Soroban Contract
+    participant Frontend as Frontend App
+
+    Note over Backend: 1. Generate wrap data
+    Backend->>Backend: Analyze user's on-chain activity
+    Backend->>Backend: Compute data_hash (SHA256 of JSON)
+    Backend->>Backend: Assign archetype persona
+
+    Note over Backend,Admin: 2. Sign with admin key
+    Backend->>Admin: Sign(contract_id + user + period + archetype + data_hash)
+    Admin-->>Backend: Ed25519 signature
+
+    Note over Backend,User: 3. Deliver to user
+    Backend-->>User: signature + period + archetype + data_hash
+
+    Note over User,Contract: 4. User claims on-chain
+    User->>Contract: mint_wrap(user, period, archetype, data_hash, signature)
+    Contract->>Contract: Verify user auth (require_auth)
+    Contract->>Contract: Verify admin signature (ed25519_verify)
+    Contract->>Contract: Check no duplicate (Wrap key)
+    Contract->>Contract: Store WrapRecord (persistent)
+    Contract->>Contract: Update balance & latest period
+    Contract-->>User: Event: (mint, user, period) → archetype
+
+    Note over Frontend,Contract: 5. Frontend reads data
+    Frontend->>Contract: get_wrap(user, period)
+    Contract-->>Frontend: WrapRecord {timestamp, data_hash, archetype, period}
+    Frontend->>Contract: balance_of(user)
+    Contract-->>Frontend: wrap count
+    Frontend->>Frontend: Display persona & stats
+```
+
+---
+
 ## 🛠️ Tech Stack
 
 - **Language:** Rust
@@ -86,42 +129,140 @@ This project is designed to support the growth of the Stellar network by:
 - ✅ Public query interface for retrieving wrap records
 - ✅ Event emission for minting actions
 - ✅ Prevention of duplicate wraps per user
+- ✅ Contract upgrade mechanism (admin-only WASM upgrade via `upgrade()`)
+
+### Upgrading the Contract
+
+The contract supports in-place WASM upgrades via Soroban's `update_current_contract_wasm`. All persistent storage (wrap records, admin key, etc.) is preserved across upgrades.
+
+**Process:**
+1. Upload the new WASM to the Stellar network and note its hash.
+2. Call `upgrade(new_wasm_hash)` — requires admin authorization.
+3. Soroban validates the hash against the uploaded blob and atomically replaces the code.
+
+Only the admin address can trigger an upgrade. Any call without valid admin authorization will be rejected.
+
+### Storage Schema Migration (v1 → v2)
+
+Schema version is stored in instance storage (`DataKey::SchemaVersion`). `initialize()` sets version `1`. After deploying upgraded WASM that adds the `image_uri` field to `WrapRecord`, the admin must call:
+
+```
+migrate(from_version=1, to_version=2)
+```
+
+**Procedure:**
+1. Upload and deploy new WASM via `upgrade(new_wasm_hash)`.
+2. Call `migrate(1, 2)` once — requires admin auth. Emits a `(schema, migrat)` event.
+3. Verify `get_schema_version()` returns `2`.
+4. Existing v1 records are **lazily migrated** on first `get_wrap` read: upgraded in storage and a `(migrat, user, period)` event is emitted.
+
+`migrate()` is guarded — it only succeeds when the stored version equals `from_version` and `to_version == from_version + 1`. A second call with the same transition panics with `InvalidMigration` (#11).
+
+While schema version is `1`, new mints are stored in v1 format. After migration, new mints use v2 format (`image_uri` included).
+
+### Merkle Batch Claims
+
+For large airdrops, the admin publishes a single merkle root per period instead of signing each mint:
+
+1. **Off-chain:** Build a binary merkle tree over claim leaves (see `scripts/merkle.ts`).
+2. **On-chain:** Admin calls `set_merkle_root(period, root)`.
+3. **Claim:** Each user calls `claim_wrap(user, period, archetype, data_hash, proof)` with `user.require_auth()`.
+
+**Leaf encoding** (must match contract `compute_merkle_leaf`):
+
+```
+leaf = SHA-256( XDR(user) ‖ XDR(period) ‖ XDR(archetype) ‖ XDR(data_hash) )
+```
+
+**Internal nodes:** `SHA-256( min(left,right) ‖ max(left,right) )` (32-byte hashes, lexicographic order).
+
+Double-claims are prevented via `MerkleClaimed(user, period)`. Claims produce the same `WrapRecord` and `(mint, user, period)` event as `mint_wrap`.
+
+### User Privacy Opt-Out
+
+Users may hide their wraps from public queries without deleting soulbound records:
+
+- `opt_out(user)` — requires user auth; `get_wrap` / `get_latest_wrap` return `None`
+- `opt_in(user)` — restores visibility
+- `balance_of` and `verify_data` remain functional for composability
+- Admin `revoke_wrap` still works on opted-out users
+
+---
+
+## 📊 Design Decision: On-Chain `WrapCount` and `balance_of`
+
+**Issue [#40](https://github.com/zintarh/stellar-wrap-contract/issues/40) — Considered removing `WrapCount` storage**
+
+### The trade-off
+
+`WrapCount` is a persistent storage entry incremented on every `mint_wrap` call. This means every mint performs two persistent storage writes (the `WrapRecord` and the `WrapCount`). Since mints also emit events, the count *could* be derived off-chain by indexing those events.
+
+### Decision: **Keep `WrapCount` and `balance_of`**
+
+**Rationale:**
+
+1. **On-chain composability.** `balance_of(user)` allows other Soroban contracts to read a user's wrap count in a single storage read. Removing it would make composability with future on-chain logic impossible without an expensive storage scan.
+2. **Predictable cost.** One extra persistent write per mint is a fixed, bounded cost. Lazy counting via storage iteration would be unbounded and far more expensive at query time.
+3. **Off-chain indexing is unreliable as a source of truth.** Events are not stored in contract state; an indexer can miss events or be unavailable. On-chain state is the canonical source of truth.
+
+**Alternatives considered and rejected:**
+
+| Option | Why rejected |
+|---|---|
+| Remove `WrapCount`, derive from events | Breaks on-chain composability; indexer dependency |
+| Lazy count (iterate storage) | O(n) cost per query; prohibitively expensive at scale |
+| Keep as-is | ✅ **Selected** — fixed cost, composable, canonical |
+
+---
+
+## 🔒 Mint Guard Storage Decision
+
+The mint reentrancy guard uses Soroban temporary storage, not persistent storage.
+
+- Temporary storage is cheaper and matches the guard lifecycle (single invocation scope).
+- On successful mint, the guard key is removed explicitly.
+- On failure paths (panic), the temporary entry is not persisted forever and is naturally cleaned up by Soroban TTL.
 
 ## 📝 Contract Interface
 
 ### Functions
 
-- `initialize(e: Env, admin: Address)` - Initialize contract with admin (callable once)
-- `mint_wrap(e: Env, to: Address, data_hash: BytesN<32>, archetype: Symbol, period: Symbol)` - Mint a wrap record for a period (admin only)
-- `get_wrap(e: Env, user: Address, period: Symbol) -> Option<WrapRecord>` - Retrieve a user's wrap record for a period
-- `get_user_count(e: Env, user: Address) -> u32` - Retrieve the number of wraps minted for a user
-- `get_admin(e: Env) -> Address` - Retrieve the configured admin address
+- `initialize(e: Env, admin: Address, admin_pubkey: BytesN<32>)` - Initialize contract with admin and signature verification key (callable once)
+- `mint_wrap(e: Env, user: Address, period: u64, archetype: Symbol, data_hash: BytesN<32>, signature: BytesN<64>)` - Mint a signed wrap record
+- `claim_wrap(e: Env, user: Address, period: u64, archetype: Symbol, data_hash: BytesN<32>, proof: Vec<BytesN<32>>)` - Claim a wrap through a published merkle root
+- `update_wrap(e: Env, user: Address, period: u64, new_data_hash: BytesN<32>, new_archetype: Symbol, signature: BytesN<64>)` - Update a wrap record (admin only)
+- `get_wrap(e: Env, user: Address, period: u64) -> Option<WrapRecord>` - Retrieve a user's wrap record for a period
+- `get_latest_wrap(e: Env, user: Address) -> Option<WrapRecord>` - Retrieve a user's latest wrap
+- `balance_of(e: Env, id: Address) -> i128` - Retrieve a user's wrap count
+- `get_admin(e: Env) -> Option<Address>` - Retrieve the configured admin
 - `add_archetype(e: Env, archetype: Symbol)` - Add an allowed archetype (admin only)
 - `remove_archetype(e: Env, archetype: Symbol)` - Remove an allowed archetype (admin only)
 - `get_allowed_archetypes(e: Env) -> Vec<Symbol>` - Retrieve the current archetype allowlist
-- `upgrade(e: Env, wasm_hash: BytesN<32>)` - Upgrade the current contract WASM (admin only)
+- `upgrade(e: Env, new_wasm_hash: BytesN<32>)` - Upgrade the current contract WASM (admin only)
 
 ### Storage
 
-- `WrapRecord`: Contains `minted_at`, `data_hash`, `archetype`, and `period`
+- `WrapRecord`: Contains `timestamp`, `data_hash`, `archetype`, `period`, and `image_uri`
 - `DataKey::Admin`: Stores the admin address
-- `DataKey::Wrap(Address, Symbol)`: Maps user addresses and periods to their wrap records
-- `DataKey::UserCount(Address)`: Tracks the number of wraps minted for a user
+- `DataKey::AdminPubKey`: Stores the Ed25519 public key used for signature verification
+- `DataKey::Wrap(Address, u64)`: Maps user addresses and periods to their wrap records
+- `DataKey::WrapCount(Address)`: Tracks the number of wraps minted for a user
 - `DataKey::AllowedArchetypes`: Stores the admin-managed archetype allowlist
 
 ## Archetype Validation
 
-Archetypes remain stored as `Symbol` values for backwards compatibility with existing wraps. Replacing the field with a contract enum would reduce storage variability, but it would be a breaking storage migration because records already serialized with `Symbol` would no longer decode cleanly.
+Archetypes remain stored as `Symbol` values for backwards compatibility with existing wraps and the v1-to-v2 lazy migration path. Replacing the field with a contract enum would reduce storage variability, but it would be a breaking storage migration because records already serialized with `Symbol` would no longer decode cleanly.
 
-The contract therefore uses an admin-managed allowlist. `initialize()` seeds the list with the known short archetypes `builder`, `architect`, `defi`, and `patron`; admins can update it with `add_archetype()` and `remove_archetype()`. `mint_wrap()` rejects archetypes that are not present in the allowlist.
+The contract therefore uses an admin-managed allowlist. `initialize()` seeds the list with known short archetypes used by the project and current tests: `builder`, `arch`, `architect`, `soroban`, `defi`, and `patron`. Admins can update it with `add_archetype()` and `remove_archetype()`. `mint_wrap()`, `claim_wrap()`, and `update_wrap()` reject archetypes that are not present in the allowlist.
 
 ## Testnet Deployment
 
 The `.github/workflows/deploy-testnet.yml` workflow deploys automatically on pushes to `main` and can also be run manually with `workflow_dispatch`.
 
-Required GitHub Actions secret:
+Required GitHub Actions secrets:
 
 - `STELLAR_DEPLOYER_SECRET`: secret key for the funded Stellar testnet deployer account.
+- `STELLAR_ADMIN_PUBKEY`: Ed25519 public key used by `initialize()` to verify wrap signatures on fresh deployments.
 
 Optional GitHub Actions secret:
 
@@ -131,6 +272,17 @@ Manual dispatch inputs:
 
 - `contract_id`: overrides `STELLAR_TESTNET_CONTRACT_ID` for an ad-hoc upgrade.
 - `admin_address`: admin address used when initializing a new deployment. Defaults to the deployer public key.
+- `admin_pubkey`: overrides `STELLAR_ADMIN_PUBKEY` for a fresh deployment.
 - `initialize`: whether to call `initialize()` after a fresh deployment.
 
 Every deployment writes `contract-id.txt` as a GitHub Actions artifact and adds the contract ID plus `get_admin()` smoke-test result to the job summary.
+
+### Error Codes
+
+| Code | Error |
+| --- | --- |
+| 1 | `AlreadyInitialized` |
+| 2 | `NotInitialized` |
+| 3 | `Unauthorized` |
+| 4 | `WrapAlreadyExists` |
+| 5 | `InvalidSignature` |
