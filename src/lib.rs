@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, panic_with_error, symbol_short, xdr::ToXdr, Address,
-    Bytes, BytesN, Env, String, Symbol,
+    contract, contracterror, contractimpl, panic_with_error, symbol_short, vec, xdr::ToXdr,
+    Address, Bytes, BytesN, Env, String, Symbol, Vec,
 };
 
 mod merkle;
@@ -10,6 +10,7 @@ mod storage_types;
 use merkle::{compute_merkle_leaf, verify_merkle_proof};
 use storage_types::{
     ContractInfo, DataKey, WrapRecord, WrapRecordV1, SCHEMA_VERSION, SCHEMA_VERSION_V2,
+    MAX_DELEGATES,
 };
 
 soroban_sdk::contractmeta!(
@@ -49,6 +50,12 @@ pub enum ContractError {
     InvalidMigration = 11,
     /// Storage deposit/budget exceeded (code 12)
     StorageDepositExceeded = 12,
+    /// Delegate is already registered (code 13)
+    DelegateAlreadyExists = 13,
+    /// Delegate was not found (code 14)
+    DelegateNotFound = 14,
+    /// Maximum delegate count reached (code 15)
+    MaxDelegatesReached = 15,
 }
 
 
@@ -103,6 +110,89 @@ impl StellarWrapContract {
             (symbol_short!("admin"), symbol_short!("updated")),
             (current_admin, new_admin),
         );
+    }
+
+    /// Register an authorized delegate and their Ed25519 public key for mint signatures.
+    ///
+    /// Delegates may sign `mint_wrap` payloads with their own key when `delegate` is set.
+    pub fn add_delegate(e: Env, delegate: Address, delegate_pubkey: BytesN<32>) {
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+        admin.require_auth();
+
+        let delegate_key = DataKey::Delegate(delegate.clone());
+        if e.storage().persistent().has(&delegate_key) {
+            panic_with_error!(e, ContractError::DelegateAlreadyExists);
+        }
+
+        let mut list: Vec<Address> = e
+            .storage()
+            .instance()
+            .get(&DataKey::DelegateList)
+            .unwrap_or_else(|| vec![&e]);
+        if list.len() >= MAX_DELEGATES {
+            panic_with_error!(e, ContractError::MaxDelegatesReached);
+        }
+
+        let ttl_one_year = 17280 * 365;
+        e.storage()
+            .persistent()
+            .set(&delegate_key, &delegate_pubkey);
+        e.storage()
+            .persistent()
+            .extend_ttl(&delegate_key, ttl_one_year, ttl_one_year);
+
+        list.push_back(delegate.clone());
+        e.storage()
+            .instance()
+            .set(&DataKey::DelegateList, &list);
+
+        e.events()
+            .publish((symbol_short!("deleg"), symbol_short!("added")), delegate);
+    }
+
+    /// Remove a registered mint delegate.
+    pub fn remove_delegate(e: Env, delegate: Address) {
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+        admin.require_auth();
+
+        let delegate_key = DataKey::Delegate(delegate.clone());
+        if !e.storage().persistent().has(&delegate_key) {
+            panic_with_error!(e, ContractError::DelegateNotFound);
+        }
+
+        e.storage().persistent().remove(&delegate_key);
+
+        let list: Vec<Address> = e
+            .storage()
+            .instance()
+            .get(&DataKey::DelegateList)
+            .unwrap_or_else(|| vec![&e]);
+        let mut next = vec![&e];
+        for i in 0..list.len() {
+            let addr = list.get(i).unwrap();
+            if addr != delegate {
+                next.push_back(addr);
+            }
+        }
+        e.storage().instance().set(&DataKey::DelegateList, &next);
+
+        e.events()
+            .publish((symbol_short!("deleg"), symbol_short!("rmvd")), delegate);
+    }
+
+    /// Return whether `addr` is a registered mint delegate.
+    pub fn is_delegate(e: Env, addr: Address) -> bool {
+        e.storage()
+            .persistent()
+            .has(&DataKey::Delegate(addr))
     }
 
     /// Charge storage deposit units for a user before performing a persistent write.
@@ -181,18 +271,22 @@ impl StellarWrapContract {
     /// - `archetype`: A short `Symbol` describing the user's persona (e.g. `"builder"`).
     /// - `data_hash`: SHA-256 hash of the off-chain JSON data. Must not be all-zero bytes.
     /// - `signature`: 64-byte Ed25519 signature from the admin over the canonical payload.
+    /// - `delegate`: When set, the delegate must authorize and their registered pubkey is used
+    ///   for signature verification instead of the admin key.
     ///
     /// # Returns
     /// Nothing on success. Emits a `(mint, user, period) → archetype` event.
     ///
     /// # Authorization
-    /// Requires authorization from `user`.
+    /// Requires authorization from `user`. When `delegate` is `Some`, that delegate must also
+    /// authorize the call.
     ///
     /// # Panics
     /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
     /// - [`ContractError::InvalidDataHash`] if `data_hash` is all-zero bytes.
     /// - [`ContractError::InvalidSignature`] if the Ed25519 signature is invalid.
     /// - [`ContractError::WrapAlreadyExists`] if a wrap for `(user, period)` already exists.
+    /// - [`ContractError::Unauthorized`] if `delegate` is set but not registered.
     pub fn mint_wrap(
         e: Env,
         user: Address,
@@ -200,6 +294,7 @@ impl StellarWrapContract {
         archetype: Symbol,
         data_hash: BytesN<32>,
         signature: BytesN<64>,
+        delegate: Option<Address>,
     ) {
         // 1. Security: Ensure the user actually signed this transaction
         user.require_auth();
@@ -219,6 +314,17 @@ impl StellarWrapContract {
             .get(&DataKey::AdminPubKey)
             .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
 
+        let signing_pubkey = match delegate {
+            None => admin_pubkey,
+            Some(ref d) => {
+                d.require_auth();
+                e.storage()
+                    .persistent()
+                    .get(&DataKey::Delegate(d.clone()))
+                    .unwrap_or_else(|| panic_with_error!(e, ContractError::Unauthorized))
+            }
+        };
+
         // 3. Reject zero data_hash — all-zero bytes indicate missing or invalid data
         if data_hash == BytesN::from_array(&e, &[0u8; 32]) {
             panic_with_error!(e, ContractError::InvalidDataHash);
@@ -232,9 +338,9 @@ impl StellarWrapContract {
         payload.append(&archetype.clone().to_xdr(&e));
         payload.append(&data_hash.clone().to_xdr(&e));
 
-        // 5. Verify Admin Signature
+        // 5. Verify signature from admin or authorized delegate
         e.crypto()
-            .ed25519_verify(&admin_pubkey, &payload, &signature);
+            .ed25519_verify(&signing_pubkey, &payload, &signature);
 
         // 6. Check Duplicates & Store Record
         let wrap_key = DataKey::Wrap(user.clone(), period);

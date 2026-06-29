@@ -72,10 +72,17 @@ pub enum DataKey {
     MerkleClaimed(Address, u64),
     /// User privacy opt-out flag (persistent)
     UserOptOut(Address),
+    /// Registered delegate address → Ed25519 public key for mint signatures
+    Delegate(Address),
+    /// Ordered list of registered delegate addresses (instance storage)
+    DelegateList,
 }
 
 /// Current schema version written by `initialize()` and advanced by `migrate()`.
 pub const SCHEMA_VERSION: u32 = 1;
 /// Target schema version after v1 → v2 migration (`image_uri` field).
 pub const SCHEMA_VERSION_V2: u32 = 2;
+
+/// Maximum number of registered mint delegates to limit persistent storage growth.
+pub const MAX_DELEGATES: u32 = 20;
 
