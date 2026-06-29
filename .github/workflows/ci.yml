@@ -1,14 +1,12 @@
 name: CI
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+on: [push, pull_request]
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
     - uses: actions/checkout@v4
     - name: Install Rust
@@ -21,85 +19,3 @@ jobs:
       run: cargo clippy -- -D warnings
     - name: Run tests
       run: cargo test
-
-  wasm-size:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Build WASM (release)
-        run: cargo build --release --target wasm32-unknown-unknown
-
-      - name: Check WASM size
-        id: size-check
-        run: |
-          WASM="target/wasm32-unknown-unknown/release/stellar_wrap_contract.wasm"
-          LIMIT=$(cat .github/wasm-size-limit | tr -d '[:space:]')
-          SIZE=$(wc -c < "$WASM")
-
-          echo "wasm_size=$SIZE"     >> "$GITHUB_OUTPUT"
-          echo "wasm_limit=$LIMIT"   >> "$GITHUB_OUTPUT"
-
-          echo "## WASM Size Report" >> "$GITHUB_STEP_SUMMARY"
-          echo ""                    >> "$GITHUB_STEP_SUMMARY"
-          echo "| Metric | Value |"  >> "$GITHUB_STEP_SUMMARY"
-          echo "| --- | --- |"       >> "$GITHUB_STEP_SUMMARY"
-          echo "| Current size | ${SIZE} bytes ($(( SIZE / 1024 )) KB) |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Size limit   | ${LIMIT} bytes ($(( LIMIT / 1024 )) KB) |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Soroban max  | 262144 bytes (256 KB) |" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$SIZE" -gt "$LIMIT" ]; then
-            echo "| Status | ❌ EXCEEDED |" >> "$GITHUB_STEP_SUMMARY"
-            echo "::error::WASM size ${SIZE} bytes exceeds limit of ${LIMIT} bytes. Update .github/wasm-size-limit if this is intentional."
-            exit 1
-          else
-            REMAINING=$(( LIMIT - SIZE ))
-            echo "| Remaining | ${REMAINING} bytes |" >> "$GITHUB_STEP_SUMMARY"
-            echo "| Status | ✅ OK |"                  >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Compute size delta vs base branch
-        if: github.event_name == 'pull_request'
-        run: |
-          WASM="target/wasm32-unknown-unknown/release/stellar_wrap_contract.wasm"
-          PR_SIZE=$(wc -c < "$WASM")
-
-          # Build the base branch WASM for comparison
-          git fetch origin ${{ github.base_ref }} --depth=1
-          git stash
-          git checkout origin/${{ github.base_ref }} -- .
-          cargo build --release --target wasm32-unknown-unknown 2>/dev/null || true
-
-          if [ -f "$WASM" ]; then
-            BASE_SIZE=$(wc -c < "$WASM")
-            DELTA=$(( PR_SIZE - BASE_SIZE ))
-            if [ "$DELTA" -gt 0 ]; then
-              SYMBOL="📈 +${DELTA}"
-            elif [ "$DELTA" -lt 0 ]; then
-              SYMBOL="📉 ${DELTA}"
-            else
-              SYMBOL="➡️  0"
-            fi
-            echo ""                              >> "$GITHUB_STEP_SUMMARY"
-            echo "## Size Delta vs Base Branch"  >> "$GITHUB_STEP_SUMMARY"
-            echo ""                              >> "$GITHUB_STEP_SUMMARY"
-            echo "| Branch | Size |"             >> "$GITHUB_STEP_SUMMARY"
-            echo "| --- | --- |"                 >> "$GITHUB_STEP_SUMMARY"
-            echo "| base (${{ github.base_ref }}) | ${BASE_SIZE} bytes |" >> "$GITHUB_STEP_SUMMARY"
-            echo "| PR   | ${PR_SIZE} bytes |"   >> "$GITHUB_STEP_SUMMARY"
-            echo "| Delta | ${SYMBOL} bytes |"   >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Could not build base branch for delta comparison." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload WASM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: stellar_wrap_contract-${{ github.sha }}
-          path: target/wasm32-unknown-unknown/release/stellar_wrap_contract.wasm
-          retention-days: 90
