@@ -45,6 +45,127 @@ This smart contract provides the on-chain registry for Stellar Wrap records:
 4.  **Compare:** Anyone can call `compare_wraps()` to compare two users' visible wraps for the same period in one read.
 5.  **Soulbound:** Records are non-transferable (SBT), permanently linked to the user's Stellar address.
 
+### Contract Interaction Flowchart
+
+The diagram below shows the complete contract lifecycle — from deployment through initialization, minting, querying, verification, and optional admin operations. Decision diamonds highlight authorization and validation checks; yellow nodes are error paths.
+
+```mermaid
+flowchart TD
+    subgraph legend["Legend"]
+        direction LR
+        legAdmin["Admin functions"]:::admin
+        legUser["User functions"]:::user
+        legRead["Read-only functions"]:::readonly
+        legErr["Error paths"]:::error
+    end
+
+    Deploy(["Deploy Contract"]) --> InitFn
+
+    InitFn["initialize(admin, admin_pubkey)"]:::admin
+    InitFn --> InitCheck{"Is initialized?"}
+    InitCheck -->|"Yes"| ErrAI["AlreadyInitialized"]:::error
+    InitCheck -->|"No"| Ready(["Contract Ready"])
+
+    Ready --> MintFn
+    Ready --> AdminBranch
+    Ready --> ReadBranch
+
+    MintFn["mint_wrap(user, period, archetype, data_hash, signature)"]:::user
+    MintFn --> MintInit{"Initialized?"}
+    MintInit -->|"No"| ErrNI1["NotInitialized"]:::error
+    MintInit -->|"Yes"| MintUser{"User auth?"}
+    MintUser -->|"No"| ErrUA1["Unauthorized"]:::error
+    MintUser -->|"Yes"| MintHash{"Valid data_hash?"}
+    MintHash -->|"No"| ErrIDH1["InvalidDataHash"]:::error
+    MintHash -->|"Yes"| MintSig{"Signature valid?"}
+    MintSig -->|"No"| ErrIS1["InvalidSignature"]:::error
+    MintSig -->|"Yes"| MintDup{"Wrap exists?"}
+    MintDup -->|"Yes"| ErrWAE["WrapAlreadyExists"]:::error
+    MintDup -->|"No"| MintOK(["Wrap minted"])
+
+    AdminBranch --> UpdAdmin
+    AdminBranch --> UpdWrap
+    AdminBranch --> Revoke
+    AdminBranch --> Upgrade
+
+    UpdAdmin["update_admin(new_admin)"]:::admin
+    UpdAdmin --> UAInit{"Initialized?"}
+    UAInit -->|"No"| ErrNI2["NotInitialized"]:::error
+    UAInit -->|"Yes"| UAAuth{"Admin auth?"}
+    UAAuth -->|"No"| ErrUA2["Unauthorized"]:::error
+    UAAuth -->|"Yes"| UAOK(["Admin updated"])
+
+    UpdWrap["update_wrap(user, period, new_data_hash, new_archetype, signature)"]:::admin
+    UpdWrap --> UWInit{"Initialized?"}
+    UWInit -->|"No"| ErrNI3["NotInitialized"]:::error
+    UWInit -->|"Yes"| UWAuth{"Admin auth?"}
+    UWAuth -->|"No"| ErrUA3["Unauthorized"]:::error
+    UWAuth -->|"Yes"| UWHash{"Valid data_hash?"}
+    UWHash -->|"No"| ErrIDH2["InvalidDataHash"]:::error
+    UWHash -->|"Yes"| UWSig{"Signature valid?"}
+    UWSig -->|"No"| ErrIS2["InvalidSignature"]:::error
+    UWSig -->|"Yes"| UWExist{"Wrap exists?"}
+    UWExist -->|"No"| ErrWNF1["WrapNotFound"]:::error
+    UWExist -->|"Yes"| UWOK(["Wrap updated"])
+
+    Revoke["revoke_wrap(user, period)"]:::admin
+    Revoke --> RVInit{"Initialized?"}
+    RVInit -->|"No"| ErrNI4["NotInitialized"]:::error
+    RVInit -->|"Yes"| RVAuth{"Admin auth?"}
+    RVAuth -->|"No"| ErrUA4["Unauthorized"]:::error
+    RVAuth -->|"Yes"| RVExist{"Wrap exists?"}
+    RVExist -->|"No"| ErrWNF2["WrapNotFound"]:::error
+    RVExist -->|"Yes"| RVOK(["Wrap revoked"])
+
+    Upgrade["upgrade(new_wasm_hash)"]:::admin
+    Upgrade --> UGInit{"Initialized?"}
+    UGInit -->|"No"| ErrNI5["NotInitialized"]:::error
+    UGInit -->|"Yes"| UGAuth{"Admin auth?"}
+    UGAuth -->|"No"| ErrUA5["Unauthorized"]:::error
+    UGAuth -->|"Yes"| UGOK(["Contract upgraded"])
+
+    ReadBranch --> GetWrap
+    ReadBranch --> VerifyData
+    ReadBranch --> OtherRead
+
+    GetWrap["get_wrap(user, period)"]:::readonly
+    GetWrap --> GWExist{"Wrap exists?"}
+    GWExist -->|"No"| GWNone(["Returns None"])
+    GWExist -->|"Yes"| GWSome(["Returns WrapRecord"])
+
+    VerifyData["verify_data(user, period, data)"]:::readonly
+    VerifyData --> VDExist{"Wrap exists?"}
+    VDExist -->|"No"| VDFalse(["Returns false"])
+    VDExist -->|"Yes"| VDHash{"Hash matches?"}
+    VDHash -->|"No"| VDFalse
+    VDHash -->|"Yes"| VDTrue(["Returns true"])
+
+    OtherRead --> BalanceOf["balance_of(id)"]:::readonly
+    OtherRead --> GetLatest["get_latest_wrap(user)"]:::readonly
+    OtherRead --> ExtendTTL["extend_ttl(user, period)"]:::readonly
+    OtherRead --> GetAdmin["get_admin()"]:::readonly
+    OtherRead --> Name["name()"]:::readonly
+    OtherRead --> Symbol["symbol()"]:::readonly
+    OtherRead --> Decimals["decimals()"]:::readonly
+    OtherRead --> ContractInfo["contract_info()"]:::readonly
+
+    BalanceOf --> BOResult(["Returns wrap count"])
+    GetLatest --> GLExist{"Latest wrap exists?"}
+    GLExist -->|"No"| GLNone(["Returns None"])
+    GLExist -->|"Yes"| GLSome(["Returns WrapRecord"])
+    ExtendTTL --> TTLResult(["Extends storage TTL"])
+    GetAdmin --> AdminResult(["Returns Option&lt;Address&gt;"])
+    Name --> NameResult(["Returns name string"])
+    Symbol --> SymbolResult(["Returns symbol string"])
+    Decimals --> DecimalsResult(["Returns 0"])
+    ContractInfo --> InfoResult(["Returns ContractInfo"])
+
+    classDef admin fill:#ff6b6b,stroke:#c92a2a,color:#fff
+    classDef user fill:#339af0,stroke:#1864ab,color:#fff
+    classDef readonly fill:#51cf66,stroke:#2b8a3e,color:#fff
+    classDef error fill:#fff3bf,stroke:#f59f00,color:#000
+```
+
 ---
 
 ## 🎯 Key Metrics Tracked
