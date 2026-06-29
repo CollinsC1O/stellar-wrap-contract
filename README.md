@@ -225,3 +225,4 @@ The mint reentrancy guard uses Soroban temporary storage, not persistent storage
 | 3 | `Unauthorized` |
 | 4 | `WrapAlreadyExists` |
 | 5 | `InvalidSignature` |
+| 8 | `Overflow` |

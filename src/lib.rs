@@ -48,6 +48,8 @@ pub enum ContractError {
     InvalidSignature = 6,
     /// `data_hash` is all-zero bytes, which indicates missing or invalid data. (code 7)
     InvalidDataHash = 7,
+    /// The wrap count would overflow `u32`. (code 8)
+    Overflow = 8,
 }
 
 #[contract]
@@ -198,9 +200,10 @@ impl StellarWrapContract {
         // 7. Update Balance
         let count_key = DataKey::WrapCount(user.clone());
         let current_count: u32 = e.storage().persistent().get(&count_key).unwrap_or(0);
-        e.storage()
-            .persistent()
-            .set(&count_key, &(current_count + 1));
+        let new_count = current_count
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::Overflow));
+        e.storage().persistent().set(&count_key, &new_count);
         e.storage()
             .persistent()
             .extend_ttl(&count_key, ttl_one_year, ttl_one_year);
@@ -330,7 +333,7 @@ impl StellarWrapContract {
         if current_count > 0 {
             e.storage()
                 .persistent()
-                .set(&count_key, &(current_count - 1));
+                .set(&count_key, &current_count.saturating_sub(1));
         }
 
         e.events()
@@ -357,18 +360,14 @@ impl StellarWrapContract {
     /// - `id`: The address to query.
     ///
     /// # Returns
-    /// The number of wraps as `i128`. Returns `0` if the user has no wraps or the contract
+    /// The number of wraps as `u32`. Returns `0` if the user has no wraps or the contract
     /// has not been initialized.
-    pub fn balance_of(e: Env, id: Address) -> i128 {
+    pub fn balance_of(e: Env, id: Address) -> u32 {
         let count_key = DataKey::WrapCount(id);
-        // u32 fits entirely in i128 — no truncation or sign loss is possible.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let balance = e
-            .storage()
+        e.storage()
             .persistent()
             .get::<_, u32>(&count_key)
-            .unwrap_or(0) as i128;
-        balance
+            .unwrap_or(0)
     }
 
     /// Verify that the SHA-256 hash of `data` matches the `data_hash` stored in a wrap record.
