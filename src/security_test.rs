@@ -1091,3 +1091,122 @@ fn test_mint_with_tampered_signature_rejected() {
 
     client.mint_wrap(&user, &period, &archetype, &data_hash, &tampered_sig, &None);
 }
+
+/// Acceptance Criterion: Test with attacker's signing key → ed25519_verify should panic.
+/// An attacker generates a valid payload and signs it with their own key.
+/// The contract stores the admin's public key, so the attacker's signature
+/// must fail Ed25519 verification and panic.
+#[test]
+#[should_panic]
+fn test_mint_with_attacker_signing_key_rejected() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let admin_signing_key = SigningKey::from_bytes(&[1u8; 32]);
+    let attacker_signing_key = SigningKey::from_bytes(&[2u8; 32]);
+
+    let admin_pubkey = BytesN::from_array(&env, &admin_signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let data_hash = BytesN::from_array(&env, &[42u8; 32]);
+    let archetype = symbol_short!("architect");
+    let period = 202512u64;
+
+    let signature = sign_payload(
+        &env,
+        &attacker_signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &data_hash,
+    );
+
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &signature);
+}
+
+/// Acceptance Criterion: Test with corrupted signature bytes → should panic.
+/// A valid signature is generated, then several bytes are overwritten
+/// before submission. Ed25519 verification must reject it.
+#[test]
+#[should_panic]
+fn test_mint_with_corrupted_signature_bytes_rejected() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[1u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let data_hash = BytesN::from_array(&env, &[42u8; 32]);
+    let archetype = symbol_short!("architect");
+    let period = 202512u64;
+
+    let mut sig_bytes = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &data_hash,
+    )
+    .to_array();
+
+    // Corrupt multiple bytes in the signature
+    sig_bytes[0] ^= 0xFF;
+    sig_bytes[10] ^= 0xFF;
+    sig_bytes[20] ^= 0xFF;
+    let corrupted_sig = BytesN::from_array(&env, &sig_bytes);
+
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &corrupted_sig);
+}
+
+/// Acceptance Criterion: Test with correct key but tampered payload → should panic.
+/// The admin signs a valid payload, but the caller mutates one field
+/// (data_hash) before submitting. The signature no longer matches
+/// the tampered payload, so ed25519_verify must panic.
+#[test]
+#[should_panic]
+fn test_mint_with_tampered_payload_rejected() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[1u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let data_hash = BytesN::from_array(&env, &[42u8; 32]);
+    let archetype = symbol_short!("architect");
+    let period = 202512u64;
+
+    let signature = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &data_hash,
+    );
+
+    // Tamper with the payload: change the data_hash
+    let tampered_data_hash = BytesN::from_array(&env, &[99u8; 32]);
+
+    client.mint_wrap(&user, &period, &archetype, &tampered_data_hash, &signature);
+}
