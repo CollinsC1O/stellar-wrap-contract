@@ -235,6 +235,56 @@ sequenceDiagram
 
 ---
 
+## 📦 WASM Size Tracking
+
+The CI pipeline enforces a WASM binary size limit to catch regressions before they reach production.
+
+### How it works
+
+Every push and pull request runs the `wasm-size` CI job, which:
+
+1. Builds the contract in release mode (`--target wasm32-unknown-unknown`)
+2. Reads the limit from `.github/wasm-size-limit` (in bytes)
+3. Fails the build if the compiled WASM exceeds the limit
+4. Reports current size, limit, and remaining headroom in the job summary
+5. On pull requests, reports the size delta compared to the base branch
+6. Uploads the WASM binary as a GitHub Actions artifact (90-day retention) for historical trending
+
+### Updating the size limit
+
+If you intentionally add features that increase the WASM size, update the limit file:
+
+```bash
+# Check current compiled size
+cargo build --release --target wasm32-unknown-unknown
+wc -c target/wasm32-unknown-unknown/release/stellar_wrap_contract.wasm
+
+# Update the limit to new size + 20% buffer (example: 85000 bytes → 102000)
+echo "102000" > .github/wasm-size-limit
+```
+
+Commit the updated `.github/wasm-size-limit` alongside your feature PR so reviewers can see the intentional size increase.
+
+> **Hard limits:** Soroban enforces a maximum contract size of **256 KB** (262144 bytes). Keep the repo limit well below this to leave headroom for future features.
+
+---
+
+## 🔢 Named Constants
+
+All magic numbers in the contract are defined in `src/constants.rs`:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `LEDGERS_PER_DAY` | `17280` | Ledgers produced per day (~5 s block time) |
+| `TTL_DAYS` | `365` | Default TTL period in days |
+| `DEFAULT_TTL_LEDGERS` | `17280 × 365 = 6,307,200` | ~1-year TTL used for all persistent storage |
+| `HASH_AND_KEY_LEN` | `32` | SHA-256 hash / Ed25519 public key length (bytes) |
+| `SIGNATURE_LEN` | `64` | Ed25519 signature length (bytes) |
+| `DEFAULT_COUNT` | `0` | Initial value for wrap count storage |
+| `DEFAULT_LATEST_PERIOD` | `0` | Initial value for latest-period tracker |
+
+---
+
 ## 🛠️ Tech Stack
 
 - **Language:** Rust

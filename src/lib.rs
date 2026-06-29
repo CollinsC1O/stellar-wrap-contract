@@ -5,7 +5,6 @@ use soroban_sdk::{
     Bytes, BytesN, Env, IntoVal, String, Symbol,
 };
 
-mod merkle;
 mod storage_types;
 
 soroban_sdk::contractmeta!(
@@ -345,212 +344,24 @@ impl StellarWrapContract {
             image_uri: String::from_str(&e, ""),
         };
 
-        let ttl_one_year = 17280 * 365;
-        // DoS protection: charge before any new persistent writes.
-        // Claiming adds MerkleClaimed + Wrap + aux counters.
-        Self::charge_storage_or_panic(&e, &user, 3);
-
-        e.storage().persistent().set(&claim_key, &true);
         e.storage()
             .persistent()
-            .extend_ttl(&claim_key, ttl_one_year, ttl_one_year);
-
-        Self::persist_wrap_record(&e, user.clone(), period, record, archetype);
-
-        e.storage().temporary().remove(&guard_key);
-    }
-
-    /// Run a one-shot schema migration after a WASM upgrade (admin-only).
-    ///
-    /// Records are lazily upgraded on read via `get_wrap`. This function advances
-    /// `SchemaVersion` and may only be called once per version transition.
-    pub fn migrate(e: Env, from_version: u32, to_version: u32) -> u32 {
-        let admin: Address = e
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
-        admin.require_auth();
-
-        let current: u32 = e
-            .storage()
-            .instance()
-            .get(&DataKey::SchemaVersion)
-            .unwrap_or(SCHEMA_VERSION);
-
-        if current != from_version || to_version != from_version + 1 {
-            panic_with_error!(e, ContractError::InvalidMigration);
-        }
-
-        e.storage()
-            .instance()
-            .set(&DataKey::SchemaVersion, &to_version);
-
-        e.events().publish(
-            (symbol_short!("schema"), symbol_short!("migrat")),
-            (from_version, to_version),
-        );
-
-        to_version
-    }
-
-    /// Return the current storage schema version.
-    pub fn get_schema_version(e: Env) -> u32 {
-        e.storage()
-            .instance()
-            .get(&DataKey::SchemaVersion)
-            .unwrap_or(SCHEMA_VERSION)
-    }
-
-    /// Hide all wrap records for `user` from public queries (`get_wrap`, `get_latest_wrap`).
-    pub fn opt_out(e: Env, user: Address) {
-        user.require_auth();
-        e.storage()
-            .instance()
-            .get::<_, Address>(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
-
-        let ttl_one_year = 17280 * 365;
-        e.storage()
-            .persistent()
-            .set(&DataKey::UserOptOut(user.clone()), &true);
-        e.storage().persistent().extend_ttl(
-            &DataKey::UserOptOut(user.clone()),
-            ttl_one_year,
-            ttl_one_year,
-        );
-
-        e.events()
-            .publish((symbol_short!("opt_out"), user), true);
-    }
-
-    /// Re-enable public visibility of wrap records for `user`.
-    pub fn opt_in(e: Env, user: Address) {
-        user.require_auth();
-        e.storage()
-            .instance()
-            .get::<_, Address>(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
-
-        e.storage().persistent().remove(&DataKey::UserOptOut(user.clone()));
-
-        e.events()
-            .publish((symbol_short!("opt_in"), user), true);
-    }
-
-    /// Return whether `user` has opted out of public wrap visibility.
-    pub fn is_opted_out(e: Env, user: Address) -> bool {
-        e.storage()
-            .persistent()
-            .get(&DataKey::UserOptOut(user))
-            .unwrap_or(false)
-    }
-
-    fn schema_version(e: &Env) -> u32 {
-        e.storage()
-            .instance()
-            .get(&DataKey::SchemaVersion)
-            .unwrap_or(SCHEMA_VERSION)
-    }
-
-    fn v1_to_v2(e: &Env, v1: &WrapRecordV1) -> WrapRecord {
-        WrapRecord {
-            timestamp: v1.timestamp,
-            data_hash: v1.data_hash.clone(),
-            archetype: v1.archetype.clone(),
-            period: v1.period,
-            image_uri: String::from_str(e, ""),
-        }
-    }
-
-    fn migrate_v1_record(e: &Env, user: &Address, period: u64, v1: WrapRecordV1) -> WrapRecord {
-        let migrated = Self::v1_to_v2(e, &v1);
-        let wrap_key = DataKey::Wrap(user.clone(), period);
-        let ttl_one_year = 17280 * 365;
-        e.storage().persistent().set(&wrap_key, &migrated);
-        e.storage()
-            .persistent()
-            .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
-        e.events().publish(
-            (symbol_short!("migrat"), user.clone(), period),
-            v1.archetype,
-        );
-        migrated
-    }
-
-    fn periods_are_consecutive(previous: u64, next: u64) -> bool {
-        let prev_year = previous / 100;
-        let prev_month = previous % 100;
-        let next_year = next / 100;
-        let next_month = next % 100;
-
-        if prev_month == 0 || prev_month > 12 || next_month == 0 || next_month > 12 {
-            return false;
-        }
-
-        if prev_month == 12 {
-            next_year == prev_year + 1 && next_month == 1
-        } else {
-            next_year == prev_year && next_month == prev_month + 1
-        }
-    }
-
-    fn persist_wrap_record(
-        e: &Env,
-        user: Address,
-        period: u64,
-        record: WrapRecord,
-        archetype: Symbol,
-    ) {
-        let wrap_key = DataKey::Wrap(user.clone(), period);
-        let ttl_one_year = 17280 * 365;
-        if Self::schema_version(e) < SCHEMA_VERSION_V2 {
-            let v1 = WrapRecordV1 {
-                timestamp: record.timestamp,
-                data_hash: record.data_hash,
-                archetype: record.archetype.clone(),
-                period: record.period,
-            };
-            e.storage().persistent().set(&wrap_key, &v1);
-        } else {
-            e.storage().persistent().set(&wrap_key, &record);
-        }
-        e.storage()
-            .persistent()
-            .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
+            .extend_ttl(&wrap_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
 
         let count_key = DataKey::WrapCount(user.clone());
-        let current_count: u32 = e.storage().persistent().get(&count_key).unwrap_or(0);
-        let next_count = current_count
-            .checked_add(1)
-            .unwrap_or_else(|| panic_with_error!(e, ContractError::Overflow));
         e.storage()
             .persistent()
             .set(&count_key, &next_count);
         e.storage()
             .persistent()
-            .extend_ttl(&count_key, ttl_one_year, ttl_one_year);
+            .extend_ttl(&count_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
 
         let latest_key = DataKey::LatestPeriod(user.clone());
-        let current_latest: u64 = e.storage().persistent().get(&latest_key).unwrap_or(0);
-
-        let streak_key = DataKey::WrapStreak(user.clone());
-        let current_streak: u32 = e.storage().persistent().get(&streak_key).unwrap_or(0);
-        let next_streak = if period > current_latest {
-            if current_latest != 0 && Self::periods_are_consecutive(current_latest, period) {
-                current_streak.saturating_add(1)
-            } else {
-                1
-            }
-        } else {
-            current_streak
-        };
-
         if period > current_latest {
             e.storage().persistent().set(&latest_key, &period);
             e.storage()
                 .persistent()
-                .extend_ttl(&latest_key, ttl_one_year, ttl_one_year);
+                .extend_ttl(&latest_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
         }
 
         e.storage().persistent().set(&streak_key, &next_streak);
@@ -668,21 +479,9 @@ impl StellarWrapContract {
             image_uri: existing.image_uri,
         };
 
-        let ttl_one_year = 17280 * 365;
-        if Self::schema_version(&e) < SCHEMA_VERSION_V2 {
-            let v1 = WrapRecordV1 {
-                timestamp: updated.timestamp,
-                data_hash: updated.data_hash.clone(),
-                archetype: updated.archetype.clone(),
-                period: updated.period,
-            };
-            e.storage().persistent().set(&wrap_key, &v1);
-        } else {
-            e.storage().persistent().set(&wrap_key, &updated);
-        }
         e.storage()
             .persistent()
-            .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
+            .extend_ttl(&wrap_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
 
         e.events()
             .publish((symbol_short!("update"), user, period), new_archetype);
@@ -780,7 +579,11 @@ impl StellarWrapContract {
         e.storage().persistent().remove(&wrap_key);
 
         let count_key = DataKey::WrapCount(user.clone());
-        let current_count: u32 = e.storage().persistent().get(&count_key).unwrap_or(0);
+        let current_count: u32 = e
+            .storage()
+            .persistent()
+            .get(&count_key)
+            .unwrap_or(DEFAULT_COUNT);
         if current_count > 0 {
             e.storage()
                 .persistent()
@@ -831,7 +634,7 @@ impl StellarWrapContract {
         e.storage()
             .persistent()
             .get::<_, u32>(&count_key)
-            .unwrap_or(0) as i128
+            .unwrap_or(DEFAULT_COUNT) as i128
     }
 
     /// Return the total number of wraps minted across all users.
@@ -926,28 +729,27 @@ impl StellarWrapContract {
     /// - `period`: The specific wrap period whose record TTL will be extended.
     pub fn extend_ttl(e: Env, user: Address, period: u64) {
         let wrap_key = DataKey::Wrap(user.clone(), period);
-        let ttl = 17280 * 365; // ~1 year in ledgers
 
         if e.storage().persistent().has(&wrap_key) {
-            e.storage().persistent().extend_ttl(&wrap_key, ttl, ttl);
+            e.storage()
+                .persistent()
+                .extend_ttl(&wrap_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
         }
 
         let count_key = DataKey::WrapCount(user.clone());
         if e.storage().persistent().has(&count_key) {
-            e.storage().persistent().extend_ttl(&count_key, ttl, ttl);
+            e.storage()
+                .persistent()
+                .extend_ttl(&count_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
         }
 
         let latest_key = DataKey::LatestPeriod(user.clone());
         if e.storage().persistent().has(&latest_key) {
-            e.storage().persistent().extend_ttl(&latest_key, ttl, ttl);
+            e.storage()
+                .persistent()
+                .extend_ttl(&latest_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
         }
 
-        let streak_key = DataKey::WrapStreak(user.clone());
-        if e.storage().persistent().has(&streak_key) {
-            e.storage().persistent().extend_ttl(&streak_key, ttl, ttl);
-        }
-
-        e.storage().instance().extend_ttl(ttl, ttl);
     }
 
     /// Return the current consecutive wrap streak for a user.
