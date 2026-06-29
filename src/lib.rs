@@ -1,4 +1,3 @@
-﻿#![no_std]
 
 use soroban_sdk::{
 
@@ -140,7 +139,6 @@ impl StellarWrapContract {
     /// - [`ContractError::InvalidExpiry`] if `expires_at` is set but not in the future.
     /// - [`ContractError::InvalidSignature`] if the Ed25519 signature is invalid.
     /// - [`ContractError::WrapAlreadyExists`] if a wrap for `(user, period)` already exists.
-    /// - [`ContractError::Unauthorized`] if `delegate` is set but not registered.
     pub fn mint_wrap(
         e: Env,
         caller: Address,
@@ -215,8 +213,6 @@ impl StellarWrapContract {
 
         Self::persist_wrap_record(&e, symbol_short!("default"), user.clone(), period, record, archetype);
 
-        e.storage().temporary().remove(&guard_key);
-    }
 
     pub fn mint_campaign_wrap(
         e: Env,
@@ -573,6 +569,13 @@ impl StellarWrapContract {
     }
 
     /// Admin-only revocation for incorrect or fraudulent records.
+    ///
+    /// # Authorization
+    /// Requires authorization from the **admin**.
+    ///
+    /// # Panics
+    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
+    /// - [`ContractError::WrapNotFound`] if no wrap exists for `(user, period)`.
     pub fn revoke_wrap(e: Env, user: Address, period: u64) {
         Self::require_not_paused(&e);
 
@@ -632,7 +635,7 @@ impl StellarWrapContract {
         if current_count > 0 {
             e.storage()
                 .persistent()
-                .set(&count_key, &(current_count - 1));
+                .set(&count_key, &current_count.saturating_sub(1));
         }
 
         // Remove period from campaign period tracker
@@ -761,25 +764,13 @@ impl StellarWrapContract {
     /// - `id`: The address to query.
     ///
     /// # Returns
-    /// The number of wraps as `i128`. Returns `0` if the user has no wraps or the contract
+    /// The number of wraps as `u32`. Returns `0` if the user has no wraps or the contract
     /// has not been initialized.
-    pub fn balance_of(e: Env, id: Address) -> i128 {
+    pub fn balance_of(e: Env, id: Address) -> u32 {
         let count_key = DataKey::WrapCount(id);
         e.storage()
             .persistent()
             .get::<_, u32>(&count_key)
-    }
-
-    pub fn campaign_balance_of(e: Env, campaign: Symbol, id: Address) -> i128 {
-        let default_campaign = symbol_short!("default");
-        if campaign == default_campaign {
-            return Self::balance_of(e, id);
-        }
-        let count_key = DataKey::CampaignWrapCount(campaign, id);
-        e.storage()
-            .persistent()
-            .get::<_, u32>(&count_key)
-            .unwrap_or(0) as i128
     }
 
     /// Compute the SHA-256 hash of raw wrap data bytes.
