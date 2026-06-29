@@ -130,8 +130,6 @@ pub enum DataKey {
     MerkleClaimed(Address, u64),
     /// User privacy opt-out flag (persistent)
     UserOptOut(Address),
-    /// Tracks the storage format version for a specific wrap record (v1=1, v2=2).
-    WrapFormat(Address, u64),
 }
 
 /// Current schema version written by `initialize()` and advanced by `migrate()`.
