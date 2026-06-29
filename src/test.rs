@@ -756,6 +756,53 @@ fn test_concurrent_mints_different_users_same_period() {
     assert!(client.get_wrap(&user_b, &period).is_some());
 }
 
+#[test]
+fn test_same_user_mint_different_periods_succeeds() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[11u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let archetype = symbol_short!("arch");
+    let hash_a = BytesN::from_array(&env, &[11u8; 32]);
+    let hash_b = BytesN::from_array(&env, &[22u8; 32]);
+    let period_a = 202512u64;
+    let period_b = 202601u64;
+
+    let sig_a = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period_a,
+        &archetype,
+        &hash_a,
+    );
+    let sig_b = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period_b,
+        &archetype,
+        &hash_b,
+    );
+
+    client.mint_wrap(&user, &period_a, &archetype, &hash_a, &sig_a);
+    client.mint_wrap(&user, &period_b, &archetype, &hash_b, &sig_b);
+
+    assert!(client.get_wrap(&user, &period_a).is_some());
+    assert!(client.get_wrap(&user, &period_b).is_some());
+    assert_eq!(client.balance_of(&user), 2);
+}
+
 // ─── Issue #75: structured event verification ──────────────────────────────
 
 #[test]
