@@ -178,6 +178,39 @@ leaf = SHA-256( XDR(user) ‖ XDR(period) ‖ XDR(archetype) ‖ XDR(data_hash) 
 
 Double-claims are prevented via `MerkleClaimed(user, period)`. Claims produce the same `WrapRecord` and `(mint, user, period)` event as `mint_wrap`.
 
+### Wrap Data Hash Verification
+
+On-chain wrap records store a `data_hash` that is the SHA-256 digest of the **raw off-chain JSON bytes** — no envelope, prefix, or XDR encoding. Integrators can verify wraps trustlessly without an on-chain call.
+
+**Hashing scheme:**
+
+```
+data_hash = SHA-256(raw_json_bytes)
+```
+
+**Steps:**
+
+1. Serialize the wrap payload to JSON (UTF-8 bytes).
+2. Compute `SHA-256` over those bytes exactly as stored/transmitted.
+3. Compare the result to `WrapRecord.data_hash` from `get_wrap`, or call `compute_data_hash(data)` / `verify_data(user, period, data)` on-chain.
+
+**TypeScript off-chain example** (using Web Crypto):
+
+```typescript
+async function computeWrapDataHash(jsonUtf8: string): Promise<Uint8Array> {
+  const data = new TextEncoder().encode(jsonUtf8);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return new Uint8Array(digest);
+}
+
+// Example
+const json = '{"score":100,"level":"gold"}';
+const hash = await computeWrapDataHash(json);
+// hash must equal the on-chain WrapRecord.data_hash (32 bytes)
+```
+
+On-chain dry-run: call `compute_data_hash(data)` with the same raw `Bytes` passed to `verify_data` — the result must match the hash stored at mint time.
+
 ### User Privacy Opt-Out
 
 Users may hide their wraps from public queries without deleting soulbound records:

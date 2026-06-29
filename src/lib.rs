@@ -733,6 +733,21 @@ impl StellarWrapContract {
             .unwrap_or(0) as i128
     }
 
+    /// Compute the SHA-256 hash of raw wrap data bytes.
+    ///
+    /// This is the canonical hashing scheme used by `mint_wrap` and `verify_data`:
+    /// `SHA-256(raw_json_bytes)` with no envelope, prefix, or encoding wrapper.
+    ///
+    /// # Parameters
+    /// - `data`: Raw bytes (typically UTF-8 JSON) to hash.
+    ///
+    /// # Returns
+    /// The 32-byte SHA-256 digest.
+    pub fn compute_data_hash(e: Env, data: Bytes) -> BytesN<32> {
+        let hash = e.crypto().sha256(&data);
+        BytesN::from_array(&e, &hash.to_array())
+    }
+
     /// Verify that the SHA-256 hash of `data` matches the `data_hash` stored in a wrap record.
     ///
     /// Useful for off-chain integrity checks: hash the original JSON off-chain, then call this
@@ -747,10 +762,7 @@ impl StellarWrapContract {
     /// `true` if the hash matches, `false` if it does not or if no record exists.
     pub fn verify_data(e: Env, user: Address, period: u64, data: Bytes) -> bool {
         match Self::load_wrap_record(&e, &user, period) {
-            Some(record) => {
-                let computed_hash = e.crypto().sha256(&data);
-                record.data_hash == BytesN::from_array(&e, &computed_hash.to_array())
-            }
+            Some(record) => record.data_hash == Self::compute_data_hash(e, data),
             None => false,
         }
     }

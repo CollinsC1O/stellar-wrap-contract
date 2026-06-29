@@ -713,6 +713,61 @@ fn test_verify_data_no_wrap_exists() {
     assert!(!client.verify_data(&user, &9999, &data));
 }
 
+// ─── Issue #93: compute_data_hash tests ─────────────────────────────────────
+
+#[test]
+fn test_compute_data_hash_matches_mint_wrap_stored_hash() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let data_json = Bytes::from_slice(&env, b"{\"score\":100,\"level\":\"gold\"}");
+    let computed = client.compute_data_hash(&data_json);
+    let archetype = symbol_short!("arch");
+    let period = 2024u64;
+
+    let signature = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &computed,
+    );
+    client.mint_wrap(&user, &period, &archetype, &computed, &signature);
+
+    let wrap = client.get_wrap(&user, &period).unwrap();
+    assert_eq!(wrap.data_hash, computed);
+}
+
+#[test]
+fn test_compute_data_hash_matches_off_chain_sha256() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let data_json = Bytes::from_slice(&env, b"{\"persona\":\"builder\",\"tx_count\":42}");
+    let on_chain = client.compute_data_hash(&data_json);
+    let off_chain_raw = env.crypto().sha256(&data_json);
+    let off_chain = BytesN::from_array(&env, &off_chain_raw.to_array());
+
+    assert_eq!(on_chain, off_chain);
+    assert!(client.verify_data(
+        &Address::generate(&env),
+        &9999,
+        &data_json
+    ) == false);
+}
+
 // ─── Issue #87: get_latest_wrap tests ───────────────────────────────────────
 
 #[test]
