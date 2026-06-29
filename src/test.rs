@@ -5,7 +5,7 @@ use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::{
     symbol_short,
-    testutils::{Address as _, Events},
+    testutils::{Address as _, Events, Ledger},
     xdr::ToXdr,
     Address, Bytes, BytesN, Env, IntoVal, String, Symbol, TryIntoVal,
 };
@@ -64,7 +64,7 @@ fn test_minting_flow() {
         &archetype,
         &dummy_hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &dummy_hash, &signature);
+    client.mint_wrap(&user, &period, &archetype, &dummy_hash, &0u64, &signature);
 
     let wrap = client.get_wrap(&user, &period).unwrap();
     assert_eq!(wrap.data_hash, dummy_hash);
@@ -97,7 +97,7 @@ fn test_mint_emits_event() {
         &hash,
     );
 
-    client.mint_wrap(&user, &period, &archetype, &hash, &signature);
+    client.mint_wrap(&user, &period, &archetype, &hash, &0u64, &signature);
 
     let events = env.events().all();
     let last_event = events.last().expect("No events found");
@@ -142,7 +142,7 @@ fn test_streak_after_first_mint_is_one() {
         &hash,
     );
 
-    client.mint_wrap(&user, &period, &archetype, &hash, &signature);
+    client.mint_wrap(&user, &period, &archetype, &hash, &0u64, &signature);
     assert_eq!(client.get_streak(&user), 1);
 }
 
@@ -172,7 +172,7 @@ fn test_streak_increments_for_consecutive_months_and_year_boundary() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &202412u64, &archetype, &hash, &signature_1);
+    client.mint_wrap(&user, &202412u64, &archetype, &hash, &0u64, &signature_1);
     assert_eq!(client.get_streak(&user), 1);
 
     let signature_2 = sign_payload(
@@ -184,7 +184,7 @@ fn test_streak_increments_for_consecutive_months_and_year_boundary() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &202501u64, &archetype, &hash, &signature_2);
+    client.mint_wrap(&user, &202501u64, &archetype, &hash, &0u64, &signature_2);
     assert_eq!(client.get_streak(&user), 2);
 }
 
@@ -214,7 +214,7 @@ fn test_streak_resets_after_gap() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &202501u64, &archetype, &hash, &signature_1);
+    client.mint_wrap(&user, &202501u64, &archetype, &hash, &0u64, &signature_1);
     assert_eq!(client.get_streak(&user), 1);
 
     let signature_2 = sign_payload(
@@ -226,7 +226,7 @@ fn test_streak_resets_after_gap() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &202503u64, &archetype, &hash, &signature_2);
+    client.mint_wrap(&user, &202503u64, &archetype, &hash, &0u64, &signature_2);
     assert_eq!(client.get_streak(&user), 1);
 }
 
@@ -256,7 +256,7 @@ fn test_balance_of_and_count() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &2021, &archetype, &hash, &sig1);
+    client.mint_wrap(&user, &2021, &archetype, &hash, &0u64, &sig1);
 
     let sig2 = sign_payload(
         &env,
@@ -267,7 +267,7 @@ fn test_balance_of_and_count() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &2022, &archetype, &hash, &sig2);
+    client.mint_wrap(&user, &2022, &archetype, &hash, &0u64, &sig2);
 
     assert_eq!(client.balance_of(&user), 2);
 }
@@ -314,8 +314,8 @@ fn test_duplicate_period_fails() {
         &hash,
     );
 
-    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
-    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
+    client.mint_wrap(&user, &period, &archetype, &hash, &0u64, &sig);
+    client.mint_wrap(&user, &period, &archetype, &hash, &0u64, &sig);
 }
 
 #[test]
@@ -399,7 +399,7 @@ fn test_extend_ttl_existing_wrap() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
+    client.mint_wrap(&user, &period, &archetype, &hash, &0u64, &sig);
 
     // Anyone can call extend_ttl — no auth required
     client.extend_ttl(&user, &period);
@@ -422,6 +422,166 @@ fn test_extend_ttl_nonexistent_wrap_does_not_panic() {
     let user = Address::generate(&env);
     // Should not panic even if no wrap exists for this user/period
     client.extend_ttl(&user, &9999);
+}
+
+// ─── Issue #95: wrap expiry tests ───────────────────────────────────────────
+
+fn migrate_to_schema_v3(client: &StellarWrapContractClient) {
+    client.migrate(&SCHEMA_VERSION, &SCHEMA_VERSION_V2);
+    client.migrate(&SCHEMA_VERSION_V2, &SCHEMA_VERSION_V3);
+}
+
+#[test]
+fn test_mint_wrap_with_expiry_stores_expires_at() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[10u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+    migrate_to_schema_v3(&client);
+
+    let hash = BytesN::from_array(&env, &[43u8; 32]);
+    let archetype = symbol_short!("arch");
+    let period = 202601u64;
+    let expires_at = env.ledger().sequence() as u64 + 1_000;
+
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash, &expires_at, &sig);
+
+    let wrap = client.get_wrap(&user, &period).unwrap();
+    assert_eq!(wrap.expires_at, expires_at);
+}
+
+#[test]
+fn test_extend_ttl_respects_expiry_cap() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[11u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+    migrate_to_schema_v3(&client);
+
+    let hash = BytesN::from_array(&env, &[44u8; 32]);
+    let archetype = symbol_short!("arch");
+    let period = 202602u64;
+    let expires_at = env.ledger().sequence() as u64 + 100;
+
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash, &expires_at, &sig);
+
+    client.extend_ttl(&user, &period);
+    assert!(client.get_wrap(&user, &period).is_some());
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = expires_at as u32 + 1;
+    });
+
+    client.extend_ttl(&user, &period);
+    assert!(client.get_wrap(&user, &period).is_some());
+}
+
+#[test]
+fn test_cleanup_expired_wrap_after_expiry() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[12u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+    migrate_to_schema_v3(&client);
+
+    let hash = BytesN::from_array(&env, &[45u8; 32]);
+    let archetype = symbol_short!("arch");
+    let period = 202603u64;
+    let expires_at = env.ledger().sequence() as u64 + 50;
+
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash, &expires_at, &sig);
+    assert_eq!(client.balance_of(&user), 1);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = expires_at as u32;
+    });
+
+    client.cleanup_expired_wrap(&user, &period);
+    assert!(client.get_wrap(&user, &period).is_none());
+    assert_eq!(client.balance_of(&user), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")]
+fn test_cleanup_before_expiry_fails() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[13u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+    migrate_to_schema_v3(&client);
+
+    let hash = BytesN::from_array(&env, &[46u8; 32]);
+    let archetype = symbol_short!("arch");
+    let period = 202604u64;
+    let expires_at = env.ledger().sequence() as u64 + 500;
+
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash, &expires_at, &sig);
+
+    client.cleanup_expired_wrap(&user, &period);
 }
 
 // ─── Issue #81: concurrent mints for different users same period ────────────
@@ -466,8 +626,8 @@ fn test_concurrent_mints_different_users_same_period() {
     );
 
     // Both mints for the same period should succeed
-    client.mint_wrap(&user_a, &period, &archetype, &hash_a, &sig_a);
-    client.mint_wrap(&user_b, &period, &archetype, &hash_b, &sig_b);
+    client.mint_wrap(&user_a, &period, &archetype, &hash_a, &0u64, &sig_a);
+    client.mint_wrap(&user_b, &period, &archetype, &hash_b, &0u64, &sig_b);
 
     // Records are independent
     let wrap_a = client.get_wrap(&user_a, &period).unwrap();
@@ -514,7 +674,7 @@ fn test_mint_event_structured_matching() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
+    client.mint_wrap(&user, &period, &archetype, &hash, &0u64, &sig);
 
     // Event schema: topics = (Symbol("mint"), Address, u64), data = Symbol
     let events = env.events().all();
@@ -589,8 +749,8 @@ fn test_mint_events_multiple_users_correct_schema() {
         &hash_b,
     );
 
-    client.mint_wrap(&user_a, &period_a, &archetype_a, &hash_a, &sig_a);
-    client.mint_wrap(&user_b, &period_b, &archetype_b, &hash_b, &sig_b);
+    client.mint_wrap(&user_a, &period_a, &archetype_a, &hash_a, &0u64, &sig_a);
+    client.mint_wrap(&user_b, &period_b, &archetype_b, &hash_b, &0u64, &sig_b);
 
     let events = env.events().all();
 
@@ -658,7 +818,7 @@ fn test_verify_data_matching_hash() {
         &archetype,
         &data_hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &data_hash, &signature);
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &0u64, &signature);
 
     assert!(client.verify_data(&user, &period, &data_json));
 }
@@ -692,7 +852,7 @@ fn test_verify_data_non_matching_hash() {
         &archetype,
         &data_hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &data_hash, &signature);
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &0u64, &signature);
 
     let tampered_data = Bytes::from_slice(&env, b"{\"score\":999}");
     assert!(!client.verify_data(&user, &period, &tampered_data));
@@ -743,7 +903,7 @@ fn test_compute_data_hash_matches_mint_wrap_stored_hash() {
         &archetype,
         &computed,
     );
-    client.mint_wrap(&user, &period, &archetype, &computed, &signature);
+    client.mint_wrap(&user, &period, &archetype, &computed, &0u64, &signature);
 
     let wrap = client.get_wrap(&user, &period).unwrap();
     assert_eq!(wrap.data_hash, computed);
@@ -761,11 +921,7 @@ fn test_compute_data_hash_matches_off_chain_sha256() {
     let off_chain = BytesN::from_array(&env, &off_chain_raw.to_array());
 
     assert_eq!(on_chain, off_chain);
-    assert!(client.verify_data(
-        &Address::generate(&env),
-        &9999,
-        &data_json
-    ) == false);
+    assert!(client.verify_data(&Address::generate(&env), &9999, &data_json) == false);
 }
 
 // ─── Issue #87: get_latest_wrap tests ───────────────────────────────────────
@@ -817,9 +973,9 @@ fn test_get_latest_wrap_returns_most_recent() {
         &hash3,
     );
 
-    client.mint_wrap(&user, &2022, &archetype, &hash1, &sig1);
-    client.mint_wrap(&user, &2024, &archetype, &hash2, &sig2);
-    client.mint_wrap(&user, &2023, &archetype, &hash3, &sig3);
+    client.mint_wrap(&user, &2022, &archetype, &hash1, &0u64, &sig1);
+    client.mint_wrap(&user, &2024, &archetype, &hash2, &0u64, &sig2);
+    client.mint_wrap(&user, &2023, &archetype, &hash3, &0u64, &sig3);
 
     let latest = client.get_latest_wrap(&user).unwrap();
     assert_eq!(latest.period, 2024);
@@ -867,7 +1023,7 @@ fn test_get_latest_wrap_single_mint() {
         &archetype,
         &hash,
     );
-    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
+    client.mint_wrap(&user, &period, &archetype, &hash, &0u64, &sig);
 
     let latest = client.get_latest_wrap(&user).unwrap();
     assert_eq!(latest.period, 2025);
@@ -889,7 +1045,7 @@ fn test_mint_wrap_before_init_fails() {
     let archetype = symbol_short!("arch");
     let sig = BytesN::from_array(&env, &[0u8; 64]);
 
-    client.mint_wrap(&user, &2024, &archetype, &hash, &sig);
+    client.mint_wrap(&user, &2024, &archetype, &hash, &0u64, &sig);
 }
 
 #[test]
@@ -943,7 +1099,7 @@ fn test_revoke_wrap_flow_event_and_remint() {
         &archetype,
         &hash_1,
     );
-    client.mint_wrap(&user, &period, &archetype, &hash_1, &sig_1);
+    client.mint_wrap(&user, &period, &archetype, &hash_1, &0u64, &sig_1);
     assert_eq!(client.balance_of(&user), 1);
 
     client.revoke_wrap(&user, &period);
@@ -975,7 +1131,7 @@ fn test_revoke_wrap_flow_event_and_remint() {
         &archetype,
         &hash_2,
     );
-    client.mint_wrap(&user, &period, &archetype, &hash_2, &sig_2);
+    client.mint_wrap(&user, &period, &archetype, &hash_2, &0u64, &sig_2);
 
     let wrap = client.get_wrap(&user, &period).unwrap();
     assert_eq!(wrap.data_hash, hash_2);
@@ -1022,6 +1178,7 @@ fn test_revoke_requires_admin_auth() {
             archetype: symbol_short!("arch"),
             period: 2026,
             image_uri: String::from_str(&env, ""),
+            expires_at: 0,
         };
         env.storage().persistent().set(&wrap_key, &record);
         env.storage().persistent().set(&count_key, &1u32);
@@ -1060,7 +1217,7 @@ fn test_mint_guard_uses_temporary_storage_and_clears_on_success() {
         &data_hash,
     );
 
-    client.mint_wrap(&user, &period, &archetype, &data_hash, &signature);
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &0u64, &signature);
 
     let guard_key = DataKey::MintGuard(user.clone());
     env.as_contract(&contract_id, || {
@@ -1097,11 +1254,11 @@ fn test_mint_guard_on_failure_leaves_no_residual_state() {
     );
 
     // First mint succeeds.
-    client.mint_wrap(&user, &period, &archetype, &data_hash, &signature);
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &0u64, &signature);
 
     // Second mint panics (duplicate).
     let duplicate = catch_unwind(AssertUnwindSafe(|| {
-        client.mint_wrap(&user, &period, &archetype, &data_hash, &signature)
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &0u64, &signature)
     }));
     assert!(duplicate.is_err());
 
@@ -1213,9 +1370,17 @@ fn test_mint_wrap_zero_hash_rejected() {
     let archetype = symbol_short!("arch");
     let period = 2024u64;
 
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &zero_hash);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &zero_hash,
+    );
     // Must panic with InvalidDataHash
-    client.mint_wrap(&user, &period, &archetype, &zero_hash, &sig);
+    client.mint_wrap(&user, &period, &archetype, &zero_hash, &0u64, &sig);
 }
 
 #[test]
@@ -1239,8 +1404,16 @@ fn test_mint_wrap_non_zero_hash_succeeds() {
     let archetype = symbol_short!("arch");
     let period = 2024u64;
 
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &edge_hash);
-    client.mint_wrap(&user, &period, &archetype, &edge_hash, &sig);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &edge_hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &edge_hash, &0u64, &sig);
 
     let wrap = client.get_wrap(&user, &period).unwrap();
     assert_eq!(wrap.data_hash, edge_hash);
@@ -1264,8 +1437,16 @@ fn test_mint_wrap_max_hash_succeeds() {
     let archetype = symbol_short!("arch");
     let period = 2024u64;
 
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &max_hash);
-    client.mint_wrap(&user, &period, &archetype, &max_hash, &sig);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &max_hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &max_hash, &0u64, &sig);
 
     let wrap = client.get_wrap(&user, &period).unwrap();
     assert_eq!(wrap.data_hash, max_hash);
@@ -1300,7 +1481,15 @@ fn sign_update_payload(
     new_archetype: &Symbol,
     new_data_hash: &BytesN<32>,
 ) -> BytesN<64> {
-    sign_payload(env, signer, contract, user, period, new_archetype, new_data_hash)
+    sign_payload(
+        env,
+        signer,
+        contract,
+        user,
+        period,
+        new_archetype,
+        new_data_hash,
+    )
 }
 
 #[test]
@@ -1321,18 +1510,37 @@ fn test_update_wrap_succeeds_and_preserves_timestamp() {
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
 
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
-    client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash1, &0u64, &sig1);
 
     let before = client.get_wrap(&user, &period).unwrap();
 
     let new_hash = BytesN::from_array(&env, &[99u8; 32]);
     let new_arch = symbol_short!("builder");
-    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &new_arch, &new_hash);
+    let sig2 = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &new_arch,
+        &new_hash,
+    );
     client.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
 
     let after = client.get_wrap(&user, &period).unwrap();
-    assert_eq!(after.timestamp, before.timestamp, "Original timestamp must be preserved");
+    assert_eq!(
+        after.timestamp, before.timestamp,
+        "Original timestamp must be preserved"
+    );
     assert_eq!(after.data_hash, new_hash);
     assert_eq!(after.archetype, new_arch);
     assert_eq!(after.period, period);
@@ -1355,12 +1563,28 @@ fn test_update_wrap_emits_update_event() {
     let period = 2025u64;
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
-    client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash1, &0u64, &sig1);
 
     let new_hash = BytesN::from_array(&env, &[98u8; 32]);
     let new_arch = symbol_short!("defi");
-    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &new_arch, &new_hash);
+    let sig2 = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &new_arch,
+        &new_hash,
+    );
     client.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
 
     let events = env.events().all();
@@ -1395,7 +1619,15 @@ fn test_update_wrap_nonexistent_fails() {
 
     let new_hash = BytesN::from_array(&env, &[99u8; 32]);
     let new_arch = symbol_short!("arch");
-    let sig = sign_update_payload(&env, &signing_key, &contract_id, &user, 9999, &new_arch, &new_hash);
+    let sig = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        9999,
+        &new_arch,
+        &new_hash,
+    );
     client.update_wrap(&user, &9999, &new_hash, &new_arch, &sig);
 }
 
@@ -1417,8 +1649,16 @@ fn test_update_wrap_requires_admin_auth() {
     let period = 2025u64;
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
-    client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash1, &0u64, &sig1);
 
     // Reset auth — no admin auth mocked
     let env2 = Env::default();
@@ -1428,7 +1668,15 @@ fn test_update_wrap_requires_admin_auth() {
 
     let new_hash = BytesN::from_array(&env2, &[99u8; 32]);
     let new_arch = symbol_short!("arch");
-    let sig2 = sign_update_payload(&env2, &signing_key, &contract_id2, &user, period, &new_arch, &new_hash);
+    let sig2 = sign_update_payload(
+        &env2,
+        &signing_key,
+        &contract_id2,
+        &user,
+        period,
+        &new_arch,
+        &new_hash,
+    );
     // No auth mocked — must panic
     client2.update_wrap(&user, &period, &new_hash, &new_arch, &sig2);
 }
@@ -1451,11 +1699,27 @@ fn test_update_wrap_zero_hash_rejected() {
     let period = 2025u64;
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[41u8; 32]);
-    let sig1 = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash1);
-    client.mint_wrap(&user, &period, &archetype, &hash1, &sig1);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash1,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash1, &0u64, &sig1);
 
     let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
-    let sig2 = sign_update_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &zero_hash);
+    let sig2 = sign_update_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &zero_hash,
+    );
     client.update_wrap(&user, &period, &zero_hash, &archetype, &sig2);
 }
 
@@ -1490,7 +1754,11 @@ fn merkle_root_for_leaves(env: &Env, leaves: &[BytesN<32>]) -> BytesN<32> {
     layer.get(0).unwrap()
 }
 
-fn merkle_proof_for_index(env: &Env, leaves: &[BytesN<32>], index: usize) -> soroban_sdk::Vec<BytesN<32>> {
+fn merkle_proof_for_index(
+    env: &Env,
+    leaves: &[BytesN<32>],
+    index: usize,
+) -> soroban_sdk::Vec<BytesN<32>> {
     let mut proof = soroban_sdk::Vec::new(env);
     let mut idx = index;
     let mut layer: std::vec::Vec<BytesN<32>> = leaves.to_vec();
@@ -1651,7 +1919,7 @@ fn test_merkle_wrong_period_proof_fails() {
 
 // ─── Schema migration tests ─────────────────────────────────────────────────
 
-use crate::storage_types::{WrapRecordV1, SCHEMA_VERSION, SCHEMA_VERSION_V2};
+use crate::storage_types::{WrapRecordV1, SCHEMA_VERSION, SCHEMA_VERSION_V2, SCHEMA_VERSION_V3};
 
 #[test]
 fn test_lazy_migration_v1_record_readable() {
@@ -1769,8 +2037,16 @@ fn test_opt_out_hides_wraps_opt_in_reveals() {
     let period = 2025u64;
     let archetype = symbol_short!("arch");
     let hash = BytesN::from_array(&env, &[80u8; 32]);
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash);
-    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash, &0u64, &sig);
 
     assert!(client.get_wrap(&user, &period).is_some());
     assert!(!client.is_opted_out(&user));
@@ -1805,8 +2081,16 @@ fn test_opt_out_verify_data_still_works() {
     let data_hash = BytesN::from_array(&env, &data_hash_raw.to_array());
     let archetype = symbol_short!("arch");
     let period = 2025u64;
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &data_hash);
-    client.mint_wrap(&user, &period, &archetype, &data_hash, &sig);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &data_hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &0u64, &sig);
 
     client.opt_out(&user);
     assert!(client.verify_data(&user, &period, &data_json));
@@ -1829,8 +2113,16 @@ fn test_admin_can_revoke_opted_out_wrap() {
     let period = 2025u64;
     let archetype = symbol_short!("arch");
     let hash = BytesN::from_array(&env, &[81u8; 32]);
-    let sig = sign_payload(&env, &signing_key, &contract_id, &user, period, &archetype, &hash);
-    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash, &0u64, &sig);
 
     client.opt_out(&user);
     client.revoke_wrap(&user, &period);

@@ -19,6 +19,17 @@ pub struct WrapRecordV1 {
     pub period: u64,
 }
 
+/// Schema v2 wrap record (no `expires_at`). Retained for lazy migration reads.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WrapRecordV2 {
+    pub timestamp: u64,
+    pub data_hash: BytesN<32>,
+    pub archetype: Symbol,
+    pub period: u64,
+    pub image_uri: String,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WrapRecord {
@@ -28,6 +39,8 @@ pub struct WrapRecord {
     pub period: u64, // Standardized to u64 for better indexing/sorting
     /// Optional off-chain image URI (schema v2+). Empty for legacy records.
     pub image_uri: String,
+    /// Ledger sequence after which this wrap expires. `0` means no expiry.
+    pub expires_at: u64,
 }
 
 #[contracttype]
@@ -78,4 +91,5 @@ pub enum DataKey {
 pub const SCHEMA_VERSION: u32 = 1;
 /// Target schema version after v1 → v2 migration (`image_uri` field).
 pub const SCHEMA_VERSION_V2: u32 = 2;
-
+/// Target schema version after v2 → v3 migration (`expires_at` field).
+pub const SCHEMA_VERSION_V3: u32 = 3;

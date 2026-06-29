@@ -9,7 +9,8 @@ mod merkle;
 mod storage_types;
 use merkle::{compute_merkle_leaf, verify_merkle_proof};
 use storage_types::{
-    ContractInfo, DataKey, WrapRecord, WrapRecordV1, SCHEMA_VERSION, SCHEMA_VERSION_V2,
+    ContractInfo, DataKey, WrapRecord, WrapRecordV1, WrapRecordV2, SCHEMA_VERSION,
+    SCHEMA_VERSION_V2, SCHEMA_VERSION_V3,
 };
 
 soroban_sdk::contractmeta!(
@@ -49,8 +50,11 @@ pub enum ContractError {
     InvalidMigration = 11,
     /// Storage deposit/budget exceeded (code 12)
     StorageDepositExceeded = 12,
+    /// Wrap record has not yet reached its expiry ledger. (code 13)
+    WrapNotExpired = 13,
+    /// `expires_at` must be a future ledger sequence when set. (code 14)
+    InvalidExpiry = 14,
 }
-
 
 #[contract]
 pub struct StellarWrapContract;
@@ -163,7 +167,6 @@ impl StellarWrapContract {
         }
     }
 
-
     /// Mint a soulbound wrap record for a user.
     ///
     /// The backend generates a payload of `(contract_id ‖ user ‖ period ‖ archetype ‖ data_hash)`,
@@ -180,6 +183,7 @@ impl StellarWrapContract {
     /// - `period`: A `u64` identifier for the wrap period (e.g. `202412` for December 2024).
     /// - `archetype`: A short `Symbol` describing the user's persona (e.g. `"builder"`).
     /// - `data_hash`: SHA-256 hash of the off-chain JSON data. Must not be all-zero bytes.
+    /// - `expires_at`: Optional expiry ledger sequence. `0` means no expiry (permanent).
     /// - `signature`: 64-byte Ed25519 signature from the admin over the canonical payload.
     ///
     /// # Returns
@@ -191,6 +195,7 @@ impl StellarWrapContract {
     /// # Panics
     /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
     /// - [`ContractError::InvalidDataHash`] if `data_hash` is all-zero bytes.
+    /// - [`ContractError::InvalidExpiry`] if `expires_at` is set but not in the future.
     /// - [`ContractError::InvalidSignature`] if the Ed25519 signature is invalid.
     /// - [`ContractError::WrapAlreadyExists`] if a wrap for `(user, period)` already exists.
     pub fn mint_wrap(
@@ -199,6 +204,7 @@ impl StellarWrapContract {
         period: u64,
         archetype: Symbol,
         data_hash: BytesN<32>,
+        expires_at: u64,
         signature: BytesN<64>,
     ) {
         // 1. Security: Ensure the user actually signed this transaction
@@ -224,6 +230,14 @@ impl StellarWrapContract {
             panic_with_error!(e, ContractError::InvalidDataHash);
         }
 
+        if expires_at > 0 && expires_at <= e.ledger().sequence() as u64 {
+            panic_with_error!(e, ContractError::InvalidExpiry);
+        }
+
+        if expires_at > 0 && Self::schema_version(&e) < SCHEMA_VERSION_V3 {
+            panic_with_error!(e, ContractError::InvalidExpiry);
+        }
+
         // 4. Reconstruct payload: contract_id ‖ user ‖ period ‖ archetype ‖ data_hash
         let mut payload = Bytes::new(&e);
         payload.append(&e.current_contract_address().to_xdr(&e));
@@ -247,14 +261,13 @@ impl StellarWrapContract {
         // `persist_wrap_record` would add/update.
         Self::charge_storage_or_panic(&e, &user, 3);
 
-
         let record = WrapRecord {
-
             timestamp: e.ledger().timestamp(),
             data_hash,
             archetype: archetype.clone(),
             period,
             image_uri: String::from_str(&e, ""),
+            expires_at,
         };
 
         Self::persist_wrap_record(&e, user.clone(), period, record, archetype);
@@ -278,8 +291,10 @@ impl StellarWrapContract {
             .instance()
             .set(&DataKey::MerkleRoot(period), &root);
 
-        e.events()
-            .publish((symbol_short!("merkle"), symbol_short!("root"), period), root);
+        e.events().publish(
+            (symbol_short!("merkle"), symbol_short!("root"), period),
+            root,
+        );
     }
 
     /// Claim a wrap using a merkle proof against a published root for `period`.
@@ -294,7 +309,6 @@ impl StellarWrapContract {
         data_hash: BytesN<32>,
         proof: soroban_sdk::Vec<BytesN<32>>,
     ) {
-
         user.require_auth();
 
         let guard_key = DataKey::MintGuard(user.clone());
@@ -339,6 +353,7 @@ impl StellarWrapContract {
             archetype: archetype.clone(),
             period,
             image_uri: String::from_str(&e, ""),
+            expires_at: 0,
         };
 
         let ttl_one_year = 17280 * 365;
@@ -352,7 +367,6 @@ impl StellarWrapContract {
             .extend_ttl(&claim_key, ttl_one_year, ttl_one_year);
 
         Self::persist_wrap_record(&e, user.clone(), period, record, archetype);
-
 
         e.storage().temporary().remove(&guard_key);
     }
@@ -417,8 +431,7 @@ impl StellarWrapContract {
             ttl_one_year,
         );
 
-        e.events()
-            .publish((symbol_short!("opt_out"), user), true);
+        e.events().publish((symbol_short!("opt_out"), user), true);
     }
 
     /// Re-enable public visibility of wrap records for `user`.
@@ -429,10 +442,11 @@ impl StellarWrapContract {
             .get::<_, Address>(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
 
-        e.storage().persistent().remove(&DataKey::UserOptOut(user.clone()));
+        e.storage()
+            .persistent()
+            .remove(&DataKey::UserOptOut(user.clone()));
 
-        e.events()
-            .publish((symbol_short!("opt_in"), user), true);
+        e.events().publish((symbol_short!("opt_in"), user), true);
     }
 
     /// Return whether `user` has opted out of public wrap visibility.
@@ -457,22 +471,101 @@ impl StellarWrapContract {
             archetype: v1.archetype.clone(),
             period: v1.period,
             image_uri: String::from_str(e, ""),
+            expires_at: 0,
+        }
+    }
+
+    fn v2_to_v3(v2: &WrapRecordV2) -> WrapRecord {
+        WrapRecord {
+            timestamp: v2.timestamp,
+            data_hash: v2.data_hash.clone(),
+            archetype: v2.archetype.clone(),
+            period: v2.period,
+            image_uri: v2.image_uri.clone(),
+            expires_at: 0,
         }
     }
 
     fn migrate_v1_record(e: &Env, user: &Address, period: u64, v1: WrapRecordV1) -> WrapRecord {
         let migrated = Self::v1_to_v2(e, &v1);
         let wrap_key = DataKey::Wrap(user.clone(), period);
-        let ttl_one_year = 17280 * 365;
-        e.storage().persistent().set(&wrap_key, &migrated);
-        e.storage()
-            .persistent()
-            .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
+        let ttl = Self::ttl_ledgers(e, migrated.expires_at);
+        Self::write_wrap_storage(e, &wrap_key, &migrated);
+        e.storage().persistent().extend_ttl(&wrap_key, ttl, ttl);
         e.events().publish(
             (symbol_short!("migrat"), user.clone(), period),
             v1.archetype,
         );
         migrated
+    }
+
+    fn migrate_v2_record(e: &Env, user: &Address, period: u64, v2: WrapRecordV2) -> WrapRecord {
+        let migrated = Self::v2_to_v3(&v2);
+        let wrap_key = DataKey::Wrap(user.clone(), period);
+        let ttl = Self::ttl_ledgers(e, migrated.expires_at);
+        e.storage().persistent().set(&wrap_key, &migrated);
+        e.storage().persistent().extend_ttl(&wrap_key, ttl, ttl);
+        e.events().publish(
+            (symbol_short!("migrat"), user.clone(), period),
+            migrated.archetype.clone(),
+        );
+        migrated
+    }
+
+    fn write_wrap_storage(e: &Env, wrap_key: &DataKey, record: &WrapRecord) {
+        let schema = Self::schema_version(e);
+        if schema < SCHEMA_VERSION_V2 {
+            let v1 = WrapRecordV1 {
+                timestamp: record.timestamp,
+                data_hash: record.data_hash.clone(),
+                archetype: record.archetype.clone(),
+                period: record.period,
+            };
+            e.storage().persistent().set(wrap_key, &v1);
+        } else if schema < SCHEMA_VERSION_V3 {
+            let v2 = WrapRecordV2 {
+                timestamp: record.timestamp,
+                data_hash: record.data_hash.clone(),
+                archetype: record.archetype.clone(),
+                period: record.period,
+                image_uri: record.image_uri.clone(),
+            };
+            e.storage().persistent().set(wrap_key, &v2);
+        } else {
+            e.storage().persistent().set(wrap_key, record);
+        }
+    }
+
+    /// Default persistent TTL (~1 year in ledgers).
+    fn default_ttl() -> u32 {
+        17280 * 365
+    }
+
+    /// Compute TTL ledgers for a record, capped by `expires_at` when set.
+    fn ttl_ledgers(e: &Env, expires_at: u64) -> u32 {
+        let default_ttl = Self::default_ttl();
+        if expires_at == 0 {
+            return default_ttl;
+        }
+        let current = e.ledger().sequence() as u64;
+        if current >= expires_at {
+            return 0;
+        }
+        let remaining = (expires_at - current) as u32;
+        remaining.min(default_ttl)
+    }
+
+    /// Cap a requested TTL extension so storage does not outlive `expires_at`.
+    fn capped_ttl(e: &Env, expires_at: u64, requested_ttl: u32) -> u32 {
+        if expires_at == 0 {
+            return requested_ttl;
+        }
+        let current = e.ledger().sequence() as u64;
+        if current >= expires_at {
+            return 0;
+        }
+        let max_remaining = (expires_at - current) as u32;
+        requested_ttl.min(max_remaining)
     }
 
     fn periods_are_consecutive(previous: u64, next: u64) -> bool {
@@ -500,30 +593,16 @@ impl StellarWrapContract {
         archetype: Symbol,
     ) {
         let wrap_key = DataKey::Wrap(user.clone(), period);
-        let ttl_one_year = 17280 * 365;
-        if Self::schema_version(e) < SCHEMA_VERSION_V2 {
-            let v1 = WrapRecordV1 {
-                timestamp: record.timestamp,
-                data_hash: record.data_hash,
-                archetype: record.archetype.clone(),
-                period: record.period,
-            };
-            e.storage().persistent().set(&wrap_key, &v1);
-        } else {
-            e.storage().persistent().set(&wrap_key, &record);
-        }
-        e.storage()
-            .persistent()
-            .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
+        let ttl = Self::ttl_ledgers(e, record.expires_at);
+        Self::write_wrap_storage(e, &wrap_key, &record);
+        e.storage().persistent().extend_ttl(&wrap_key, ttl, ttl);
 
         let count_key = DataKey::WrapCount(user.clone());
         let current_count: u32 = e.storage().persistent().get(&count_key).unwrap_or(0);
         e.storage()
             .persistent()
             .set(&count_key, &(current_count + 1));
-        e.storage()
-            .persistent()
-            .extend_ttl(&count_key, ttl_one_year, ttl_one_year);
+        e.storage().persistent().extend_ttl(&count_key, ttl, ttl);
 
         let latest_key = DataKey::LatestPeriod(user.clone());
         let current_latest: u64 = e.storage().persistent().get(&latest_key).unwrap_or(0);
@@ -542,15 +621,11 @@ impl StellarWrapContract {
 
         if period > current_latest {
             e.storage().persistent().set(&latest_key, &period);
-            e.storage()
-                .persistent()
-                .extend_ttl(&latest_key, ttl_one_year, ttl_one_year);
+            e.storage().persistent().extend_ttl(&latest_key, ttl, ttl);
         }
 
         e.storage().persistent().set(&streak_key, &next_streak);
-        e.storage()
-            .persistent()
-            .extend_ttl(&streak_key, ttl_one_year, ttl_one_year);
+        e.storage().persistent().extend_ttl(&streak_key, ttl, ttl);
 
         e.events()
             .publish((symbol_short!("mint"), user, period), archetype);
@@ -568,12 +643,27 @@ impl StellarWrapContract {
                 .map(|v1| Self::v1_to_v2(e, &v1));
         }
 
-        // After migration, unread v1 records must be tried before v2 deserialization.
+        if schema >= SCHEMA_VERSION_V3 {
+            if let Some(record) = e.storage().persistent().get::<_, WrapRecord>(&wrap_key) {
+                return Some(record);
+            }
+            if let Some(v2) = e.storage().persistent().get::<_, WrapRecordV2>(&wrap_key) {
+                return Some(Self::migrate_v2_record(e, user, period, v2));
+            }
+            if let Some(v1) = e.storage().persistent().get::<_, WrapRecordV1>(&wrap_key) {
+                return Some(Self::migrate_v1_record(e, user, period, v1));
+            }
+            return None;
+        }
+
         if let Some(v1) = e.storage().persistent().get::<_, WrapRecordV1>(&wrap_key) {
             return Some(Self::migrate_v1_record(e, user, period, v1));
         }
+        if let Some(v2) = e.storage().persistent().get::<_, WrapRecordV2>(&wrap_key) {
+            return Some(Self::v2_to_v3(&v2));
+        }
 
-        e.storage().persistent().get::<_, WrapRecord>(&wrap_key)
+        None
     }
 
     fn user_is_opted_out(e: &Env, user: &Address) -> bool {
@@ -648,26 +738,50 @@ impl StellarWrapContract {
             archetype: new_archetype.clone(),
             period,
             image_uri: existing.image_uri,
+            expires_at: existing.expires_at,
         };
 
-        let ttl_one_year = 17280 * 365;
-        if Self::schema_version(&e) < SCHEMA_VERSION_V2 {
-            let v1 = WrapRecordV1 {
-                timestamp: updated.timestamp,
-                data_hash: updated.data_hash.clone(),
-                archetype: updated.archetype.clone(),
-                period: updated.period,
-            };
-            e.storage().persistent().set(&wrap_key, &v1);
-        } else {
-            e.storage().persistent().set(&wrap_key, &updated);
-        }
-        e.storage()
-            .persistent()
-            .extend_ttl(&wrap_key, ttl_one_year, ttl_one_year);
+        let ttl = Self::ttl_ledgers(&e, updated.expires_at);
+        Self::write_wrap_storage(&e, &wrap_key, &updated);
+        e.storage().persistent().extend_ttl(&wrap_key, ttl, ttl);
 
         e.events()
             .publish((symbol_short!("update"), user, period), new_archetype);
+    }
+
+    /// Remove a wrap record that has passed its expiry ledger.
+    ///
+    /// Anyone may call this to reclaim storage for time-limited campaign wraps.
+    /// Records with `expires_at == 0` (no expiry) cannot be cleaned up.
+    ///
+    /// # Parameters
+    /// - `user`: The address whose expired wrap should be removed.
+    /// - `period`: The period identifier of the wrap to clean up.
+    ///
+    /// # Panics
+    /// - [`ContractError::WrapNotFound`] if no wrap exists for `(user, period)`.
+    /// - [`ContractError::WrapNotExpired`] if the record has no expiry or is not yet expired.
+    pub fn cleanup_expired_wrap(e: Env, user: Address, period: u64) {
+        let record = Self::load_wrap_record(&e, &user, period)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::WrapNotFound));
+
+        if record.expires_at == 0 || (e.ledger().sequence() as u64) < record.expires_at {
+            panic_with_error!(e, ContractError::WrapNotExpired);
+        }
+
+        let wrap_key = DataKey::Wrap(user.clone(), period);
+        e.storage().persistent().remove(&wrap_key);
+
+        let count_key = DataKey::WrapCount(user.clone());
+        let current_count: u32 = e.storage().persistent().get(&count_key).unwrap_or(0);
+        if current_count > 0 {
+            e.storage()
+                .persistent()
+                .set(&count_key, &(current_count - 1));
+        }
+
+        e.events()
+            .publish((symbol_short!("cleanup"), user, period), true);
     }
 
     /// Admin-only revocation for incorrect or fraudulent records.
@@ -788,33 +902,42 @@ impl StellarWrapContract {
     /// Soroban persistent storage entries expire after their TTL lapses. This function lets
     /// anyone renew a user's wrap records so they remain accessible indefinitely.
     ///
+    /// When a wrap has `expires_at` set, TTL extensions are capped so storage does not
+    /// outlive the expiry ledger.
+    ///
     /// # Parameters
     /// - `user`: The address whose storage entries will be extended.
     /// - `period`: The specific wrap period whose record TTL will be extended.
     pub fn extend_ttl(e: Env, user: Address, period: u64) {
         let wrap_key = DataKey::Wrap(user.clone(), period);
-        let ttl = 17280 * 365; // ~1 year in ledgers
+        let requested_ttl = Self::default_ttl();
+        let expires_at = Self::load_wrap_record(&e, &user, period)
+            .map(|record| record.expires_at)
+            .unwrap_or(0);
+        let ttl = Self::capped_ttl(&e, expires_at, requested_ttl);
 
-        if e.storage().persistent().has(&wrap_key) {
+        if ttl > 0 && e.storage().persistent().has(&wrap_key) {
             e.storage().persistent().extend_ttl(&wrap_key, ttl, ttl);
         }
 
         let count_key = DataKey::WrapCount(user.clone());
-        if e.storage().persistent().has(&count_key) {
+        if ttl > 0 && e.storage().persistent().has(&count_key) {
             e.storage().persistent().extend_ttl(&count_key, ttl, ttl);
         }
 
         let latest_key = DataKey::LatestPeriod(user.clone());
-        if e.storage().persistent().has(&latest_key) {
+        if ttl > 0 && e.storage().persistent().has(&latest_key) {
             e.storage().persistent().extend_ttl(&latest_key, ttl, ttl);
         }
 
         let streak_key = DataKey::WrapStreak(user.clone());
-        if e.storage().persistent().has(&streak_key) {
+        if ttl > 0 && e.storage().persistent().has(&streak_key) {
             e.storage().persistent().extend_ttl(&streak_key, ttl, ttl);
         }
 
-        e.storage().instance().extend_ttl(ttl, ttl);
+        if ttl > 0 {
+            e.storage().instance().extend_ttl(ttl, ttl);
+        }
     }
 
     /// Return the current consecutive wrap streak for a user.
