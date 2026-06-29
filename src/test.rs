@@ -9,7 +9,10 @@ use soroban_sdk::{
     xdr::ToXdr,
     Address, Bytes, BytesN, Env, IntoVal, String, Symbol, TryIntoVal,
 };
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::{
+    format,
+    panic::{catch_unwind, AssertUnwindSafe},
+};
 
 
 fn sign_payload(

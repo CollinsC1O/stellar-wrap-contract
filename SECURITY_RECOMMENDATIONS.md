@@ -42,32 +42,32 @@ fn verify_signature(
 ) -> bool {
     // Construct the payload that was signed
     let mut payload = Bytes::new(e);
-    
+
     // Include contract address (prevents cross-contract replay)
     payload.append(&e.current_contract_address().to_bytes());
-    
+
     // Include user address (prevents identity theft)
     payload.append(&user.to_bytes());
-    
+
     // Include period (prevents period replay)
     payload.append(&period.to_bytes());
-    
+
     // Include data hash
     payload.append(&data_hash.to_bytes());
-    
+
     // Hash the payload
     let message = e.crypto().sha256(&payload);
-    
+
     // Get admin's public key and verify signature
     // Note: You'll need to store/retrieve the admin's public key
     let admin_pubkey = get_admin_pubkey(e);
-    
+
     e.crypto().ed25519_verify(
         &admin_pubkey,
         &message,
         signature
     );
-    
+
     true
 }
 ```
@@ -92,7 +92,7 @@ pub fn mint_wrap(
 
     // This already provides cryptographic verification
     admin.require_auth();
-    
+
     // Rest of implementation...
 }
 ```
@@ -119,7 +119,7 @@ if e.storage().instance().has(&wrap_key) {
 - Same user + same period cannot be minted twice
 - Attacker cannot replay a valid transaction
 
-**Test coverage:** 
+**Test coverage:**
 - `test_replay_attack_same_period_fails` ✓
 - `test_duplicate_period_fails` ✓
 

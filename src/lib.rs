@@ -2,10 +2,6 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, panic_with_error, symbol_short, xdr::ToXdr, Address,
-    Bytes, BytesN, Env, IntoVal, String, Symbol,
-};
-
-mod storage_types;
 
 soroban_sdk::contractmeta!(
     key = "Description",
@@ -62,67 +58,6 @@ impl StellarWrapContract {
         e.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
-
-        e.events()
-            .publish((symbol_short!("initialize"), symbol_short!("admin")), admin);
-        e.events()
-            .publish((symbol_short!("initialize"), symbol_short!("pubkey")), admin_pubkey);
-    }
-
-    /// Pause the contract to prevent state-changing operations (admin-only).
-    ///
-    /// # Authorization
-    /// Requires authorization from the **current** admin.
-    ///
-    /// # Panics
-    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
-    pub fn pause(e: Env) {
-        let admin: Address = e
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
-        admin.require_auth();
-
-        e.storage().instance().set(&DataKey::Paused, &true);
-
-        e.events()
-            .publish((symbol_short!("pause"), symbol_short!("contract")), true);
-    }
-
-    /// Unpause the contract to resume state-changing operations (admin-only).
-    ///
-    /// # Authorization
-    /// Requires authorization from the **current** admin.
-    ///
-    /// # Panics
-    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
-    pub fn unpause(e: Env) {
-        let admin: Address = e
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
-        admin.require_auth();
-
-        e.storage().instance().set(&DataKey::Paused, &false);
-
-        e.events()
-            .publish((symbol_short!("unpause"), symbol_short!("contract")), true);
-    }
-
-    /// Return whether the contract is currently paused.
-    pub fn is_paused(e: Env) -> bool {
-        e.storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-    }
-
-    fn require_not_paused(e: &Env) {
-        if e.storage().instance().get(&DataKey::Paused).unwrap_or(false) {
-            panic_with_error!(e, ContractError::ContractPaused);
-        }
     }
 
     /// Replace the current admin with a new address.
@@ -266,8 +201,12 @@ impl StellarWrapContract {
             .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
 
         // 3. Reject zero data_hash — all-zero bytes indicate missing or invalid data
-        if data_hash == BytesN::from_array(&e, &[0u8; 32]) {
+        if data_hash == BytesN::from_array(&e, &ZERO_HASH_BYTES) {
             panic_with_error!(e, ContractError::InvalidDataHash);
+        }
+
+        if !is_allowed_archetype(&e, &archetype) {
+            panic_with_error!(e, ContractError::InvalidArchetype);
         }
 
         // 4. Reconstruct payload: contract_id ‖ user ‖ period ‖ archetype ‖ data_hash
@@ -324,8 +263,10 @@ impl StellarWrapContract {
             .instance()
             .set(&DataKey::MerkleRoot(period), &root);
 
-        e.events()
-            .publish((symbol_short!("merkle"), symbol_short!("root"), period), root);
+        e.events().publish(
+            (symbol_short!("merkle"), symbol_short!("root"), period),
+            root,
+        );
     }
 
     /// Claim a wrap using a merkle proof against a published root for `period`.
@@ -338,7 +279,7 @@ impl StellarWrapContract {
         period: u64,
         archetype: Symbol,
         data_hash: BytesN<32>,
-        proof: soroban_sdk::Vec<BytesN<32>>,
+        proof: Vec<BytesN<32>>,
     ) {
         Self::require_not_paused(&e);
 
@@ -355,8 +296,12 @@ impl StellarWrapContract {
             .get::<_, Address>(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
 
-        if data_hash == BytesN::from_array(&e, &[0u8; 32]) {
+        if data_hash == BytesN::from_array(&e, &ZERO_HASH_BYTES) {
             panic_with_error!(e, ContractError::InvalidDataHash);
+        }
+
+        if !is_allowed_archetype(&e, &archetype) {
+            panic_with_error!(e, ContractError::InvalidArchetype);
         }
 
         let root: BytesN<32> = e
@@ -388,18 +333,6 @@ impl StellarWrapContract {
             image_uri: String::from_str(&e, ""),
         };
 
-        e.storage()
-            .persistent()
-        e.storage()
-            .persistent()
-            .extend_ttl(&count_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
-
-        let latest_key = DataKey::LatestPeriod(user.clone());
-        if period > current_latest {
-            e.storage().persistent().set(&latest_key, &period);
-            e.storage()
-                .persistent()
-                .extend_ttl(&latest_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
         }
 
         e.storage().persistent().set(&streak_key, &next_streak);
@@ -494,8 +427,12 @@ impl StellarWrapContract {
             .get(&DataKey::AdminPubKey)
             .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
 
-        if new_data_hash == BytesN::from_array(&e, &[0u8; 32]) {
+        if new_data_hash == BytesN::from_array(&e, &ZERO_HASH_BYTES) {
             panic_with_error!(e, ContractError::InvalidDataHash);
+        }
+
+        if !is_allowed_archetype(&e, &new_archetype) {
+            panic_with_error!(e, ContractError::InvalidArchetype);
         }
 
         // Payload: contract_id ‖ user ‖ period ‖ new_archetype ‖ new_data_hash
@@ -625,7 +562,6 @@ impl StellarWrapContract {
             .storage()
             .persistent()
             .get(&count_key)
-            .unwrap_or(DEFAULT_COUNT);
         if current_count > 0 {
             e.storage()
                 .persistent()
@@ -676,15 +612,6 @@ impl StellarWrapContract {
         e.storage()
             .persistent()
             .get::<_, u32>(&count_key)
-            .unwrap_or(DEFAULT_COUNT) as i128
-    }
-
-    /// Return the total number of wraps minted across all users.
-    pub fn total_supply(e: Env) -> u64 {
-        e.storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
-            .unwrap_or(0)
     }
 
     /// Verify that the SHA-256 hash of `data` matches the `data_hash` stored in a wrap record.
@@ -771,27 +698,18 @@ impl StellarWrapContract {
     /// - `period`: The specific wrap period whose record TTL will be extended.
     pub fn extend_ttl(e: Env, user: Address, period: u64) {
         let wrap_key = DataKey::Wrap(user.clone(), period);
-
-        if e.storage().persistent().has(&wrap_key) {
-            e.storage()
-                .persistent()
-                .extend_ttl(&wrap_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
         }
 
         let count_key = DataKey::WrapCount(user.clone());
         if e.storage().persistent().has(&count_key) {
             e.storage()
                 .persistent()
-                .extend_ttl(&count_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
         }
 
         let latest_key = DataKey::LatestPeriod(user.clone());
         if e.storage().persistent().has(&latest_key) {
             e.storage()
                 .persistent()
-                .extend_ttl(&latest_key, DEFAULT_TTL_LEDGERS, DEFAULT_TTL_LEDGERS);
-        }
-
     }
 
     /// Return the current admin address, or `None` if the contract is not yet initialized.
@@ -819,7 +737,7 @@ impl StellarWrapContract {
 
     /// Return the number of decimals. Soulbound tokens are non-divisible, so this is always `0`.
     pub fn decimals(_e: Env) -> u32 {
-        0
+        TOKEN_DECIMALS
     }
 
     /// Return contract-level metadata useful for explorers and indexers.
@@ -923,6 +841,38 @@ fn verify_signature(
         Ok(Ok(())) => {}
         _ => panic_with_error!(e, ContractError::InvalidSignature),
     }
+}
+
+fn get_admin_or_panic(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized))
+}
+
+fn default_archetypes(e: &Env) -> Vec<Symbol> {
+    Vec::from_array(
+        e,
+        [
+            symbol_short!("builder"),
+            symbol_short!("arch"),
+            symbol_short!("architect"),
+            symbol_short!("soroban"),
+            symbol_short!("defi"),
+            symbol_short!("patron"),
+        ],
+    )
+}
+
+fn get_allowed_archetypes_or_default(e: &Env) -> Vec<Symbol> {
+    e.storage()
+        .instance()
+        .get(&DataKey::AllowedArchetypes)
+        .unwrap_or_else(|| default_archetypes(e))
+}
+
+fn is_allowed_archetype(e: &Env, archetype: &Symbol) -> bool {
+    get_allowed_archetypes_or_default(e).contains(archetype)
 }
 
 #[cfg(test)]

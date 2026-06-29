@@ -442,18 +442,39 @@ hash over the full activity log. Previously this forced two separate wraps for t
 
 ### Functions
 
-- `initialize(e: Env, admin: Address)` - Initialize contract with admin (callable once)
-- `mint_wrap(e: Env, to: Address, data_hash: BytesN<32>, archetype: Symbol)` - Mint a wrap record (admin only)
-- `get_wrap(e: Env, user: Address) -> Option<WrapRecord>` - Retrieve a user's wrap record
-- `compare_wraps(e: Env, user_a: Address, user_b: Address, period: u64) -> WrapComparison` - Compare two users' wraps for one period
-- `compare_total_wraps(e: Env, user_a: Address, user_b: Address) -> (u32, u32)` - Compare lifetime wrap totals
-
-### Storage
-
-- `WrapRecord`: Contains `timestamp`, `data_hash`, and `archetype`
-- `WrapComparison`: Contains both users' wraps plus comparison booleans
 - `DataKey::Admin`: Stores the admin address
-- `DataKey::Wrap(Address)`: Maps user addresses to their wrap records
+- `DataKey::AdminPubKey`: Stores the Ed25519 public key used for signature verification
+- `DataKey::Wrap(Address, u64)`: Maps user addresses and periods to their wrap records
+- `DataKey::WrapCount(Address)`: Tracks the number of wraps minted for a user
+- `DataKey::AllowedArchetypes`: Stores the admin-managed archetype allowlist
+
+## Archetype Validation
+
+Archetypes remain stored as `Symbol` values for backwards compatibility with existing wraps and the v1-to-v2 lazy migration path. Replacing the field with a contract enum would reduce storage variability, but it would be a breaking storage migration because records already serialized with `Symbol` would no longer decode cleanly.
+
+The contract therefore uses an admin-managed allowlist. `initialize()` seeds the list with known short archetypes used by the project and current tests: `builder`, `arch`, `architect`, `soroban`, `defi`, and `patron`. Admins can update it with `add_archetype()` and `remove_archetype()`. `mint_wrap()`, `claim_wrap()`, and `update_wrap()` reject archetypes that are not present in the allowlist.
+
+## Testnet Deployment
+
+The `.github/workflows/deploy-testnet.yml` workflow deploys automatically on pushes to `main` and can also be run manually with `workflow_dispatch`.
+
+Required GitHub Actions secrets:
+
+- `STELLAR_DEPLOYER_SECRET`: secret key for the funded Stellar testnet deployer account.
+- `STELLAR_ADMIN_PUBKEY`: Ed25519 public key used by `initialize()` to verify wrap signatures on fresh deployments.
+
+Optional GitHub Actions secret:
+
+- `STELLAR_TESTNET_CONTRACT_ID`: existing testnet contract ID. When present, the workflow installs the new WASM and calls `upgrade()` instead of deploying a fresh contract.
+
+Manual dispatch inputs:
+
+- `contract_id`: overrides `STELLAR_TESTNET_CONTRACT_ID` for an ad-hoc upgrade.
+- `admin_address`: admin address used when initializing a new deployment. Defaults to the deployer public key.
+- `admin_pubkey`: overrides `STELLAR_ADMIN_PUBKEY` for a fresh deployment.
+- `initialize`: whether to call `initialize()` after a fresh deployment.
+
+Every deployment writes `contract-id.txt` as a GitHub Actions artifact and adds the contract ID plus `get_admin()` smoke-test result to the job summary.
 
 ### Error Codes
 

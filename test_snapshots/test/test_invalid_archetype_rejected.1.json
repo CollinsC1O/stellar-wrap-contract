@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 2,
+    "address": 3,
     "nonce": 0
   },
   "auth": [
@@ -61,7 +61,7 @@
                           ]
                         },
                         "val": {
-                          "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                          "bytes": "3f0dda81e6abbcc5f17c359df8517177769d2dfff3d4ce942e7ce9a82dfb0db2"
                         }
                       },
                       {
@@ -165,7 +165,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                  "bytes": "3f0dda81e6abbcc5f17c359df8517177769d2dfff3d4ce942e7ce9a82dfb0db2"
                 }
               ]
             }
@@ -210,16 +210,25 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "initialize"
+                "symbol": "mint_wrap"
               }
             ],
             "data": {
               "vec": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
-                  "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                  "u64": 2025
+                },
+                {
+                  "symbol": "unknown"
+                },
+                {
+                  "bytes": "5252525252525252525252525252525252525252525252525252525252525252"
+                },
+                {
+                  "bytes": "8c64d0bc780eb6b40241fc2bd16beafb90240aafbc29da4d7d2beb52a00b92e5998a8790cc47c0f1d8c8ae179564855ca21c3db76537fb0edb011d5688e64107"
                 }
               ]
             }
@@ -241,7 +250,7 @@
               },
               {
                 "error": {
-                  "contract": 1
+                  "contract": 12
                 }
               }
             ],
@@ -251,7 +260,7 @@
                   "string": "failing with contract error"
                 },
                 {
-                  "u32": 1
+                  "u32": 12
                 }
               ]
             }
@@ -273,7 +282,7 @@
               },
               {
                 "error": {
-                  "contract": 1
+                  "contract": 12
                 }
               }
             ],
@@ -298,7 +307,7 @@
               },
               {
                 "error": {
-                  "contract": 1
+                  "contract": 12
                 }
               }
             ],
@@ -323,7 +332,7 @@
               },
               {
                 "error": {
-                  "contract": 1
+                  "contract": 12
                 }
               }
             ],
@@ -333,15 +342,24 @@
                   "string": "contract call failed"
                 },
                 {
-                  "symbol": "initialize"
+                  "symbol": "mint_wrap"
                 },
                 {
                   "vec": [
                     {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                     },
                     {
-                      "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                      "u64": 2025
+                    },
+                    {
+                      "symbol": "unknown"
+                    },
+                    {
+                      "bytes": "5252525252525252525252525252525252525252525252525252525252525252"
+                    },
+                    {
+                      "bytes": "8c64d0bc780eb6b40241fc2bd16beafb90240aafbc29da4d7d2beb52a00b92e5998a8790cc47c0f1d8c8ae179564855ca21c3db76537fb0edb011d5688e64107"
                     }
                   ]
                 }
@@ -365,7 +383,7 @@
               },
               {
                 "error": {
-                  "contract": 1
+                  "contract": 12
                 }
               }
             ],

@@ -273,12 +273,10 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "LastMintTimestamp"
                             }
                           ]
                         },
                         "val": {
-                          "u64": 0
                         }
                       },
                       {

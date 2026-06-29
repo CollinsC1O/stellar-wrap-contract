@@ -1,4 +1,8 @@
+use core::fmt;
+
 use soroban_sdk::{contracttype, Address, BytesN, String, Symbol};
+
+use crate::constants::HASH_PREVIEW_BYTES;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,6 +42,24 @@ pub struct WrapRecord {
     pub period: u64, // Standardized to u64 for better indexing/sorting
     /// Optional off-chain image URI (schema v2+). Empty for legacy records.
     pub image_uri: String,
+}
+
+impl fmt::Display for WrapRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hash = self.data_hash.to_array();
+
+        write!(
+            f,
+            "WrapRecord {{ period: {}, archetype: {:?}, timestamp: {}, data_hash: ",
+            self.period, self.archetype, self.timestamp
+        )?;
+
+        for byte in hash.iter().take(HASH_PREVIEW_BYTES) {
+            write!(f, "{byte:02x}")?;
+        }
+
+        write!(f, "..., image_uri: {:?} }}", self.image_uri)
+    }
 }
 
 #[contracttype]
@@ -97,6 +119,8 @@ pub enum DataKey {
     MerkleClaimed(Address, u64),
     /// User privacy opt-out flag (persistent)
     UserOptOut(Address),
+    /// Admin-managed archetype allowlist.
+    AllowedArchetypes,
 }
 
 /// Current schema version written by `initialize()` and advanced by `migrate()`.
