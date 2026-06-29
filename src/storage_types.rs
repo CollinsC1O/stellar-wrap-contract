@@ -119,8 +119,6 @@ pub enum DataKey {
     MerkleClaimed(Address, u64),
     /// User privacy opt-out flag (persistent)
     UserOptOut(Address),
-    /// Admin-managed archetype allowlist.
-    AllowedArchetypes,
 }
 
 /// Current schema version written by `initialize()` and advanced by `migrate()`.

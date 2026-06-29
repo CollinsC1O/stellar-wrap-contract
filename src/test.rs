@@ -39,6 +39,14 @@ fn sign_payload(
     BytesN::from_array(env, &signature.to_bytes())
 }
 
+fn register_test_archetypes(client: &StellarWrapContractClient) {
+    client.add_archetype(&symbol_short!("arch"));
+    client.add_archetype(&symbol_short!("builder"));
+    client.add_archetype(&symbol_short!("defi"));
+    client.add_archetype(&symbol_short!("soroban"));
+    client.add_archetype(&symbol_short!("architect"));
+}
+
 #[test]
 fn test_minting_flow() {
     let env = Env::default();
@@ -52,6 +60,7 @@ fn test_minting_flow() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let dummy_hash = BytesN::from_array(&env, &[42u8; 32]);
     let archetype = symbol_short!("arch");
@@ -85,6 +94,7 @@ fn test_mint_emits_event() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let period = 2024u64;
     let archetype = symbol_short!("arch");
@@ -242,6 +252,7 @@ fn test_balance_of_and_count() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let archetype = symbol_short!("soroban");
     let hash = BytesN::from_array(&env, &[1u8; 32]);
@@ -298,6 +309,7 @@ fn test_duplicate_period_fails() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let hash = BytesN::from_array(&env, &[42u8; 32]);
     let archetype = symbol_short!("arch");
@@ -384,6 +396,7 @@ fn test_extend_ttl_existing_wrap() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let hash = BytesN::from_array(&env, &[42u8; 32]);
     let archetype = symbol_short!("arch");
@@ -712,6 +725,7 @@ fn test_concurrent_mints_different_users_same_period() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let period = 202512u64;
     let archetype = symbol_short!("arch");
@@ -819,6 +833,7 @@ fn test_mint_event_structured_matching() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let period = 202512u64;
     let archetype = symbol_short!("arch");
@@ -887,6 +902,7 @@ fn test_mint_events_multiple_users_correct_schema() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let archetype_a = symbol_short!("builder");
     let archetype_b = symbol_short!("defi");
@@ -971,6 +987,7 @@ fn test_verify_data_matching_hash() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let data_json = Bytes::from_slice(&env, b"{\"score\":100,\"level\":\"gold\"}");
     let data_hash_raw = env.crypto().sha256(&data_json);
@@ -1005,6 +1022,7 @@ fn test_verify_data_non_matching_hash() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let original_data = Bytes::from_slice(&env, b"{\"score\":100}");
     let data_hash_raw = env.crypto().sha256(&original_data);
@@ -1057,6 +1075,7 @@ fn test_get_latest_wrap_returns_most_recent() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let archetype = symbol_short!("arch");
     let hash1 = BytesN::from_array(&env, &[10u8; 32]);
@@ -1127,6 +1146,7 @@ fn test_get_latest_wrap_single_mint() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let hash = BytesN::from_array(&env, &[55u8; 32]);
     let archetype = symbol_short!("arch");
@@ -1430,6 +1450,7 @@ fn test_revoke_wrap_flow_event_and_remint() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let period = 2026u64;
     let archetype = symbol_short!("arch");
@@ -1550,6 +1571,7 @@ fn test_mint_guard_uses_temporary_storage_and_clears_on_success() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let period = 2026u64;
     let archetype = symbol_short!("arch");
@@ -1586,6 +1608,7 @@ fn test_mint_guard_on_failure_leaves_no_residual_state() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let period = 2026u64;
     let archetype = symbol_short!("arch");
@@ -1745,6 +1768,7 @@ fn test_mint_wrap_non_zero_hash_succeeds() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     // A hash with only the last byte set — not all-zero, should succeed
     let mut hash_bytes = [0u8; 32];
@@ -1771,6 +1795,7 @@ fn test_mint_wrap_max_hash_succeeds() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let max_hash = BytesN::from_array(&env, &[0xff; 32]);
     let archetype = symbol_short!("arch");
@@ -1834,6 +1859,7 @@ fn test_update_wrap_succeeds_and_preserves_timestamp() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let period = 2025u64;
     let archetype = symbol_short!("arch");
@@ -1888,6 +1914,7 @@ fn test_update_wrap_emits_update_event() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let period = 2025u64;
     let archetype = symbol_short!("arch");
@@ -1947,6 +1974,7 @@ fn test_update_wrap_nonexistent_fails() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let new_hash = BytesN::from_array(&env, &[99u8; 32]);
     let new_arch = symbol_short!("arch");
@@ -1976,6 +2004,7 @@ fn test_update_wrap_requires_admin_auth() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let period = 2025u64;
     let archetype = symbol_short!("arch");
@@ -2026,6 +2055,7 @@ fn test_update_wrap_zero_hash_rejected() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let period = 2025u64;
     let archetype = symbol_short!("arch");
@@ -2064,6 +2094,7 @@ fn test_update_wrap_zero_hash_rejected() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let env = Env::default();
     let contract_id = env.register_contract(None, StellarWrapContract);
@@ -2074,6 +2105,7 @@ fn test_update_wrap_zero_hash_rejected() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
     let env = Env::default();
     let contract_id = env.register_contract(None, StellarWrapContract);
@@ -2084,4 +2116,5 @@ fn test_update_wrap_zero_hash_rejected() {
 
     client.initialize(&admin, &admin_pubkey);
     env.mock_all_auths();
+    register_test_archetypes(&client);
 
