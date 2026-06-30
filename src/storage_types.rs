@@ -1,5 +1,16 @@
 use soroban_sdk::{contracttype, Address, BytesN, String, Symbol};
 
+/// Token metadata constants.
+///
+/// WARNING: Changing these values is a BREAKING CHANGE for indexers and
+/// downstream consumers that rely on stable token identifiers. The `name()`,
+/// `symbol()`, and `decimals()` functions must remain stable across contract
+/// upgrades to preserve indexer compatibility.
+pub const TOKEN_NAME: &str = "Stellar Wrap Registry";
+pub const TOKEN_SYMBOL: &str = "WRAP";
+pub const TOKEN_DECIMALS: u32 = 0;
+pub const CONTRACT_DESCRIPTION: &str = "Soulbound token registry for Stellar Wrap";
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContractInfo {
