@@ -304,60 +304,6 @@ sequenceDiagram
 ### Deployed testnet contract
 - Testnet contract address: **TBD**
 
----
-
-## ✅ Added (v0.1.0) (contract and storage schema)
-
-### Public contract functions introduced in v0.1.0
-
-- `initialize(e, admin, admin_pubkey)`
-- `update_admin(e, new_admin)`
-- `mint_wrap(e, user, period, archetype, data_hash, signature)`
-- `update_wrap(e, user, period, new_data_hash, new_archetype, signature)`
-- `revoke_wrap(e, user, period)`
-- `get_wrap(e, user, period)`
-- `balance_of(e, id)`
-- `verify_data(e, user, period, data)`
-- `get_latest_wrap(e, user)`
-- `extend_ttl(e, user, period)`
-- `get_admin(e)`
-- `name(e)`
-- `symbol(e)`
-- `decimals(e)`
-- `contract_info(e)`
-- `upgrade(e, new_wasm_hash)`
-
-### Storage schema introduced in v0.1.0
-
-#### `DataKey` variants
-- `Admin`
-- `AdminPubKey`
-- `Wrap(Address, u64)`
-- `WrapCount(Address)`
-- `LatestPeriod(Address)`
-- `MintGuard(Address)`
-
-#### `WrapRecord` fields
-- `timestamp: u64`
-- `data_hash: BytesN<32>`
-- `archetype: Symbol`
-- `period: u64`
-
-### Tooling / build details
-- Soroban SDK: **21.7.1**
-- Rust edition: **2021**
-
-### Deployed testnet contract
-- Testnet contract address: **TBD**
-
-- ✅ Soulbound token (SBT) minting with authorization checks
-- ✅ Wrap record storage (timestamp, data hash, archetype)
-- ✅ Public query interface for retrieving wrap records
-- ✅ Public comparison interface for comparing two users' wraps
-- ✅ Event emission for minting actions
-- ✅ Prevention of duplicate wraps per user
-- ✅ Contract upgrade mechanism (admin-only WASM upgrade via `upgrade()`)
-
 ## Privacy Note
 
 `compare_wraps(user_a, user_b, period)` is intentionally read-only and public, like `get_wrap`. That means it can reveal whether each user has a visible wrap for that period, and whether both users share the same archetype. Frontends should present this clearly, and if wrap visibility opt-out is enabled, opted-out users should resolve as `None` in comparisons rather than exposing their record.
@@ -505,7 +451,269 @@ Archetypes remain stored as `Symbol` values for backwards compatibility with exi
 
 The contract therefore uses an admin-managed allowlist. `initialize()` seeds the list with known short archetypes used by the project and current tests: `builder`, `arch`, `architect`, `soroban`, `defi`, and `patron`. Admins can update it with `add_archetype()` and `remove_archetype()`. `mint_wrap()`, `claim_wrap()`, and `update_wrap()` reject archetypes that are not present in the allowlist.
 
-## Testnet Deployment
+## Deployment Guide
+
+This section covers everything you need to build, deploy, and initialize the contract on Stellar testnet or mainnet.
+
+---
+
+### Prerequisites
+
+- **Stellar CLI** — [install guide](https://developers.stellar.org/docs/tools/stellar-cli)
+- **Rust** with `wasm32-unknown-unknown` target:
+  ```bash
+  rustup target add wasm32-unknown-unknown
+  ```
+- **Funded Stellar account** with XLM for deployment fees
+- **Ed25519 keypair** for admin signing (see [Generating an Admin Keypair](#generating-an-admin-keypair))
+
+---
+
+### Generating an Admin Keypair
+
+The contract uses an Ed25519 keypair for off-chain signing of wrap payloads. The public key (32 bytes, 64 hex chars) is passed to `initialize()`. The private key is held by your backend signing service.
+
+**Option 1: Stellar CLI**
+
+```bash
+# Generate a random Ed25519 keypair and output keys as Stellar secret/public
+stellar keys generate --global admin-wrap-signer
+
+# View the public key
+stellar keys address admin-wrap-signer
+
+# View the secret key
+stellar keys show admin-wrap-signer
+```
+
+The public key from `stellar keys address` is a Stellar-encoded `G...` string. The `initialize()` function expects a raw 32-byte hex Ed25519 public key, not a Stellar address. Extract it with:
+
+```bash
+# Derive the raw 32-byte Ed25519 public key from a Stellar secret key
+stellar keys public-key admin-wrap-signer
+# → 64 hex characters (e.g., abcdef0123456789...)
+```
+
+**Option 2: soroban-cli**
+
+```bash
+soroban keys generate --global admin-wrap-signer
+soroban keys public-key admin-wrap-signer
+```
+
+**Option 3: OpenSSL (offline)**
+
+```bash
+# Generate Ed25519 private key
+openssl genpkey -algorithm ed25519 -out admin_private.pem
+
+# Extract the public key in raw 32-byte hex
+openssl pkey -in admin_private.pem -pubout -outform DER | tail -c 32 | xxd -p -c 32
+# → 64 hex characters
+```
+
+**Option 4: TypeScript (tweetnacl)**
+
+```bash
+# Run with Deno or Node
+npx -y tweetnacl-util
+```
+
+```typescript
+import nacl from "tweetnacl";
+const keypair = nacl.sign.keyPair();
+console.log("Private key (hex):", Buffer.from(keypair.secretKey).toString("hex"));
+console.log("Public key (hex):",  Buffer.from(keypair.publicKey).toString("hex"));
+```
+
+---
+
+### Step-by-Step Testnet Deployment
+
+#### 1. Build the WASM binary
+
+```bash
+cargo build --release --target wasm32-unknown-unknown
+```
+
+The compiled WASM file is at:  
+`target/wasm32-unknown-unknown/release/stellar_wrap_contract.wasm`
+
+Or using the Makefile:
+
+```bash
+make build
+```
+
+#### 2. Fund a deployer account
+
+```bash
+# Generate a new keypair for deployment
+stellar keys generate --global testnet-deployer --network testnet
+
+# Fund it via Friendbot (testnet only)
+stellar keys fund testnet-deployer --network testnet
+
+# Check the balance
+stellar balance testnet-deployer --network testnet
+```
+
+Set the secret key as an environment variable (used in subsequent steps):
+
+```bash
+export STELLAR_DEPLOYER_SECRET=$(stellar keys show testnet-deployer)
+```
+
+#### 3. Deploy the contract
+
+```bash
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/stellar_wrap_contract.wasm \
+  --network testnet \
+  --source "$STELLAR_DEPLOYER_SECRET"
+```
+
+On success, the CLI prints the **contract ID** (a hex string like `C...`). Save it:
+
+```bash
+export CONTRACT_ID=<contract-id-from-output>
+```
+
+> The `make deploy-testnet` target combines build and deploy:
+> ```bash
+> STELLAR_DEPLOYER_SECRET=$STELLAR_DEPLOYER_SECRET make deploy-testnet
+> ```
+
+#### 4. Initialize the contract
+
+`initialize()` must be called **exactly once** after deployment. It sets the admin address and the Ed25519 public key used for signature verification.
+
+```bash
+# Derive the deployer's Stellar public address
+DEPLOYER_ADDRESS=$(stellar keys address testnet-deployer)
+
+# Set the raw 32-byte Ed25519 public key for wrap signing
+export STELLAR_ADMIN_PUBKEY=<your-64-hex-char-public-key>
+
+stellar contract invoke \
+  --id "$CONTRACT_ID" \
+  --network testnet \
+  --source "$STELLAR_DEPLOYER_SECRET" \
+  -- initialize \
+  --admin "$DEPLOYER_ADDRESS" \
+  --admin_pubkey "$STELLAR_ADMIN_PUBKEY"
+```
+
+#### 5. Verify deployment
+
+```bash
+# Check the admin address was set correctly
+stellar contract invoke \
+  --id "$CONTRACT_ID" \
+  --network testnet \
+  --source "$STELLAR_DEPLOYER_SECRET" \
+  -- get_admin
+
+# Check contract metadata
+stellar contract invoke \
+  --id "$CONTRACT_ID" \
+  --network testnet \
+  --source "$STELLAR_DEPLOYER_SECRET" \
+  -- name
+
+stellar contract invoke \
+  --id "$CONTRACT_ID" \
+  --network testnet \
+  --source "$STELLAR_DEPLOYER_SECRET" \
+  -- contract_info
+```
+
+#### 6. (Optional) Run the integration smoke test
+
+```bash
+export STELLAR_DEPLOYER_SECRET=...
+export STELLAR_ADMIN_PUBKEY=...
+bash tests/integration_testnet.sh
+```
+
+---
+
+### Full deployment and initialization (all-in-one)
+
+```bash
+# 1. Build
+cargo build --release --target wasm32-unknown-unknown
+
+# 2. Deploy
+CONTRACT_ID=$(stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/stellar_wrap_contract.wasm \
+  --network testnet \
+  --source "$STELLAR_DEPLOYER_SECRET")
+echo "Contract ID: $CONTRACT_ID"
+
+# 3. Initialize
+stellar contract invoke \
+  --id "$CONTRACT_ID" \
+  --network testnet \
+  --source "$STELLAR_DEPLOYER_SECRET" \
+  -- initialize \
+  --admin "$(stellar keys address testnet-deployer)" \
+  --admin_pubkey "$STELLAR_ADMIN_PUBKEY"
+
+echo "Contract deployed and initialized."
+```
+
+---
+
+### Mainnet Deployment Checklist
+
+Use this checklist when deploying to Stellar mainnet. Each item should be verified and signed off before the deployment transaction is submitted.
+
+#### Preparation
+
+- [ ] **Security audit completed** — third-party Soroban audit passed with no critical findings
+- [ ] **Admin key management procedure documented** — who holds the Ed25519 private key, how it is stored (HSM or secure enclave), and who can authorize operations
+- [ ] **Admin key rotation rehearsed** — `update_admin()` tested on testnet end-to-end
+- [ ] **Gas costs analyzed** — run `cargo test test_gas_analysis -- --nocapture` and budget mainnet XLM for deployment + initialization
+- [ ] **Mainnet deployer funded** — account has sufficient XLM for deployment fees and ledger entry rent (at least 50 XLM recommended)
+- [ ] **Ed25519 admin keypair generated** — stored securely, **never** committed to version control
+- [ ] **Disaster recovery plan** — procedures for pausing, upgrading, and emergency admin rotation
+- [ ] **All testnet integration tests pass** — run `bash tests/integration_testnet.sh` successfully
+
+#### Deployment
+
+- [ ] Build WASM with `cargo build --release --target wasm32-unknown-unknown`
+- [ ] Deploy with `stellar contract deploy --network mainnet --source "$MAINNET_DEPLOYER_SECRET"`
+- [ ] Save the contract ID in a secure, durable location (password manager, vault, or signed commit in ops repo)
+- [ ] Call `initialize()` with the mainnet admin address and admin public key
+- [ ] Verify `get_admin()` returns the expected admin address
+- [ ] Verify `contract_info()` returns the expected metadata
+- [ ] Register initial archetypes with `add_archetype()`
+- [ ] Send a test `mint_wrap` with a valid signature to confirm the full mint path works
+
+#### Post-Deployment
+
+- [ ] Monitor contract events for the first 24 hours
+- [ ] Verify indexing services pick up the new contract
+- [ ] Pin the deployed WASM hash for reproducible builds (use `docker-build-verify`)
+- [ ] Add the mainnet contract ID to the CI/CD pipeline for future upgrades
+- [ ] Set up monitoring alerts for failed transactions
+- [ ] Document the contract ID and deployer public address in the team's operations log
+
+#### Security Considerations for Mainnet
+
+| Concern | Mitigation |
+|---------|-----------|
+| **Compromised admin key** | Use a multi-sig setup; rotate keys immediately if compromised via `update_admin()` |
+| **Upgrade attack** | Only the admin can upgrade; consider a timelock for production |
+| **Signature replay** | Contract binds signatures to `(contract_id, user, period, archetype, data_hash)` |
+| **Storage TTL expiry** | All entries use 1-year TTL; `extend_ttl()` is public |
+| **Contract paused** | Admin can pause in an emergency via `pause()` |
+| **Off-chain data integrity** | Wrap records store SHA-256 hash; verify with `verify_data()` |
+
+---
+
+### CI/CD Automated Deployment
 
 The `.github/workflows/deploy-testnet.yml` workflow deploys automatically on pushes to `main` and can also be run manually with `workflow_dispatch`.
 
