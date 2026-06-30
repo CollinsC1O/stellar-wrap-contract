@@ -1401,6 +1401,8 @@ fn test_mint_guard_uses_temporary_storage_and_clears_on_success() {
         u32::MAX,
     );
 
+    // Successful mint — guard must be set then cleared.
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &signature);
 
     let guard_key = DataKey::MintGuard(user.clone());
     env.as_contract(&contract_id, || {
@@ -1439,6 +1441,11 @@ fn test_mint_guard_on_failure_leaves_no_residual_state() {
     );
 
     // First mint succeeds.
+    client.mint_wrap(&user, &period, &archetype, &data_hash, &signature);
+
+    // Second mint with same (user, period) fails due to duplicate guard.
+    let duplicate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.mint_wrap(&user, &period, &archetype, &data_hash, &signature);
     }));
     assert!(duplicate.is_err());
 

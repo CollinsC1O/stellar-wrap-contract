@@ -30,10 +30,6 @@ pub enum ContractError {
     InvalidSignature = 6,
     /// `data_hash` is all-zero bytes, which indicates missing or invalid data. (code 7)
     InvalidDataHash = 7,
-    /// The user has opted out of receiving wraps. (code 8)
-    UserOptedOut = 8,
-}
-
 #[contract]
 pub struct StellarWrapContract;
 
@@ -212,7 +208,7 @@ impl StellarWrapContract {
         // If execution panics, the temporary TTL naturally clears stale entries.
         let guard_key = DataKey::MintGuard(user.clone());
         if e.storage().temporary().has(&guard_key) {
-            panic_with_error!(e, ContractError::Unauthorized);
+            panic_with_error!(e, ContractError::ReentrancyDetected);
         }
         e.storage().temporary().set(&guard_key, &true);
 
@@ -264,6 +260,8 @@ impl StellarWrapContract {
 
         Self::persist_wrap_record(&e, symbol_short!("default"), user.clone(), period, record, archetype);
 
+        e.storage().temporary().remove(&guard_key);
+    }
 
     pub fn mint_campaign_wrap(
         e: Env,
@@ -301,7 +299,7 @@ impl StellarWrapContract {
 
         let guard_key = DataKey::MintGuard(user.clone());
         if e.storage().temporary().has(&guard_key) {
-            panic_with_error!(e, ContractError::Unauthorized);
+            panic_with_error!(e, ContractError::ReentrancyDetected);
         }
         e.storage().temporary().set(&guard_key, &true);
 
@@ -385,7 +383,7 @@ impl StellarWrapContract {
 
         let guard_key = DataKey::MintGuard(user.clone());
         if e.storage().temporary().has(&guard_key) {
-            panic_with_error!(e, ContractError::Unauthorized);
+            panic_with_error!(e, ContractError::ReentrancyDetected);
         }
         e.storage().temporary().set(&guard_key, &true);
 
