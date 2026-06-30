@@ -92,3 +92,5 @@ pub enum DataKey {
 pub const SCHEMA_VERSION: u32 = 1;
 /// Target schema version after v1 → v2 migration (`image_uri` field).
 pub const SCHEMA_VERSION_V2: u32 = 2;
+/// Target schema version after v2 → v3 migration (wrap record updates).
+pub const SCHEMA_VERSION_V3: u32 = 3;

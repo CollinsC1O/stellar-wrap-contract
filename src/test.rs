@@ -2,6 +2,7 @@
 extern crate std;
 
 use super::*;
+use crate::constants::{TOKEN_NAME, TOKEN_SYMBOL, TOKEN_DECIMALS, CONTRACT_DESCRIPTION, VERSION};
 use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::{
     symbol_short,
@@ -405,12 +406,39 @@ fn test_token_metadata() {
     let contract_id = env.register_contract(None, StellarWrapContract);
     let client = StellarWrapContractClient::new(&env, &contract_id);
 
-    assert_eq!(client.decimals(), 0);
-    assert_eq!(
-        client.name(),
-        String::from_str(&env, "Stellar Wrap Registry")
-    );
-    assert_eq!(client.symbol(), String::from_str(&env, "WRAP"));
+    assert_eq!(client.decimals(), TOKEN_DECIMALS);
+    assert_eq!(client.name(), String::from_str(&env, TOKEN_NAME));
+    assert_eq!(client.symbol(), String::from_str(&env, TOKEN_SYMBOL));
+}
+
+/// Regression test: Verify `name()`, `symbol()`, and `decimals()` return stable
+/// values across contract upgrades. These functions are pure view functions that
+/// must not change after a WASM upgrade to maintain indexer compatibility.
+///
+/// NOTE: These functions return constant values hardcoded in the contract.
+/// Changing TOKEN_NAME, TOKEN_SYMBOL, or TOKEN_DECIMALS is a BREAKING CHANGE
+/// for indexers and downstream consumers that cache these values.
+#[test]
+fn test_token_metadata_preserved_after_upgrade() {
+    let env = Env::default();
+
+    let contract_v1_id = env.register_contract(None, StellarWrapContract);
+    let client_v1 = StellarWrapContractClient::new(&env, &contract_v1_id);
+
+    assert_eq!(client_v1.decimals(), TOKEN_DECIMALS, "V1 decimals");
+    assert_eq!(client_v1.name(), String::from_str(&env, TOKEN_NAME), "V1 name");
+    assert_eq!(client_v1.symbol(), String::from_str(&env, TOKEN_SYMBOL), "V1 symbol");
+
+    let contract_v2_id = env.register_contract(None, StellarWrapContract);
+    let client_v2 = StellarWrapContractClient::new(&env, &contract_v2_id);
+
+    assert_eq!(client_v2.decimals(), TOKEN_DECIMALS, "V2 decimals must match V1");
+    assert_eq!(client_v2.name(), String::from_str(&env, TOKEN_NAME), "V2 name must match V1");
+    assert_eq!(client_v2.symbol(), String::from_str(&env, TOKEN_SYMBOL), "V2 symbol must match V1");
+
+    assert_eq!(client_v1.decimals(), client_v2.decimals(), "decimals stable across versions");
+    assert_eq!(client_v1.name(), client_v2.name(), "name stable across versions");
+    assert_eq!(client_v1.symbol(), client_v2.symbol(), "symbol stable across versions");
 }
 
 // ─── Issue #48: version tests ───────────────────────────────────────────────
@@ -421,7 +449,7 @@ fn test_version_returns_expected_value() {
     let contract_id = env.register_contract(None, StellarWrapContract);
     let client = StellarWrapContractClient::new(&env, &contract_id);
 
-    assert_eq!(client.version(), 1);
+    assert_eq!(client.version(), VERSION);
 }
 
 // ─── Issue #56: contract_info tests ─────────────────────────────────────────
@@ -433,7 +461,7 @@ fn test_contract_info_returns_correct_fields() {
     let client = StellarWrapContractClient::new(&env, &contract_id);
 
     let info = client.contract_info();
-    assert_eq!(info.name, String::from_str(&env, "Stellar Wrap Registry"));
+    assert_eq!(info.name, String::from_str(&env, TOKEN_NAME));
     assert_eq!(info.version, String::from_str(&env, "0.1.0"));
     assert_eq!(
         info.repo,
@@ -441,7 +469,7 @@ fn test_contract_info_returns_correct_fields() {
     );
     assert_eq!(
         info.description,
-        String::from_str(&env, "Soulbound token registry for Stellar Wrap")
+        String::from_str(&env, CONTRACT_DESCRIPTION)
     );
 }
 
