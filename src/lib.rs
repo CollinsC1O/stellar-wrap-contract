@@ -3,10 +3,10 @@ use soroban_sdk::{
 
 soroban_sdk::contractmeta!(
     key = "Description",
-    val = "Soulbound token registry for Stellar Wrap"
+    val = CONTRACT_DESCRIPTION
 );
 soroban_sdk::contractmeta!(key = "Version", val = "0.1.0");
-soroban_sdk::contractmeta!(key = "Name", val = "Stellar Wrap Registry");
+soroban_sdk::contractmeta!(key = "Name", val = TOKEN_NAME);
 soroban_sdk::contractmeta!(key = "Author", val = "Stellar Wrap Team");
 
 /// Errors returned by the StellarWrap contract.
@@ -758,7 +758,7 @@ impl StellarWrapContract {
     /// # Returns
     /// `"Stellar Wrap Registry"`
     pub fn name(e: Env) -> String {
-        String::from_str(&e, "Stellar Wrap Registry")
+        String::from_str(&e, TOKEN_NAME)
     }
 
     /// Return the ticker symbol for this token registry.
@@ -766,7 +766,7 @@ impl StellarWrapContract {
     /// # Returns
     /// `"WRAP"`
     pub fn symbol(e: Env) -> String {
-        String::from_str(&e, "WRAP")
+        String::from_str(&e, TOKEN_SYMBOL)
     }
 
     /// Return the number of decimals. Soulbound tokens are non-divisible, so this is always `0`.
@@ -774,18 +774,13 @@ impl StellarWrapContract {
         TOKEN_DECIMALS
     }
 
-    /// Return the deployed contract version. Bump `VERSION` on every upgrade.
-    pub fn version(_e: Env) -> u32 {
-        VERSION
-    }
-
     /// Return contract-level metadata useful for explorers and indexers.
     pub fn contract_info(e: Env) -> ContractInfo {
         ContractInfo {
-            name: String::from_str(&e, "Stellar Wrap Registry"),
+            name: String::from_str(&e, TOKEN_NAME),
             version: String::from_str(&e, "0.1.0"),
             repo: String::from_str(&e, "https://github.com/zintarh/stellar-wrap-contract"),
-            description: String::from_str(&e, "Soulbound token registry for Stellar Wrap"),
+            description: String::from_str(&e, CONTRACT_DESCRIPTION),
         }
     }
 

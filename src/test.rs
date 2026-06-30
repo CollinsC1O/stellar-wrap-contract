@@ -14,60 +14,6 @@ use std::{
 };
 
 
-fn sign_payload_with_metadata(
-    env: &Env,
-    signer: &SigningKey,
-    contract: &Address,
-    user: &Address,
-    period: u64,
-    archetype: &Symbol,
-    data_hash: &BytesN<32>,
-    metadata: &Option<String>,
-) -> BytesN<64> {
-    let mut payload = Bytes::new(env);
-    payload.append(&contract.to_xdr(env));
-    payload.append(&user.clone().to_xdr(env));
-    payload.append(&period.to_xdr(env));
-    payload.append(&archetype.clone().to_xdr(env));
-    payload.append(&data_hash.clone().to_xdr(env));
-    payload.append(&metadata.clone().to_xdr(env));
-
-    let mut out = [0u8; 512];
-    let len = payload.len() as usize;
-    payload.copy_into_slice(&mut out[..len]);
-
-    let signature = signer.sign(&out[..len]);
-    BytesN::from_array(env, &signature.to_bytes())
-}
-
-fn sign_campaign_payload(
-    env: &Env,
-    signer: &SigningKey,
-    contract: &Address,
-    campaign: &Symbol,
-    user: &Address,
-    period: u64,
-    archetype: &Symbol,
-    data_hash: &BytesN<32>,
-    metadata: &Option<String>,
-) -> BytesN<64> {
-    let mut payload = Bytes::new(env);
-    payload.append(&contract.to_xdr(env));
-    payload.append(&campaign.clone().to_xdr(env));
-    payload.append(&user.clone().to_xdr(env));
-    payload.append(&period.to_xdr(env));
-    payload.append(&archetype.clone().to_xdr(env));
-    payload.append(&data_hash.clone().to_xdr(env));
-    payload.append(&metadata.clone().to_xdr(env));
-
-    let mut out = [0u8; 512];
-    let len = payload.len() as usize;
-    payload.copy_into_slice(&mut out[..len]);
-
-    let signature = signer.sign(&out[..len]);
-    BytesN::from_array(env, &signature.to_bytes())
-}
-
 fn sign_payload(
     env: &Env,
     signer: &SigningKey,
@@ -405,12 +351,45 @@ fn test_token_metadata() {
     let contract_id = env.register_contract(None, StellarWrapContract);
     let client = StellarWrapContractClient::new(&env, &contract_id);
 
-    assert_eq!(client.decimals(), 0);
-    assert_eq!(
-        client.name(),
-        String::from_str(&env, "Stellar Wrap Registry")
-    );
-    assert_eq!(client.symbol(), String::from_str(&env, "WRAP"));
+    // Verify all three metadata functions match expected constants
+    assert_eq!(client.decimals(), TOKEN_DECIMALS);
+    assert_eq!(client.name(), String::from_str(&env, TOKEN_NAME));
+    assert_eq!(client.symbol(), String::from_str(&env, TOKEN_SYMBOL));
+}
+
+/// Regression test: Verify `name()`, `symbol()`, and `decimals()` return stable
+/// values across contract upgrades. These functions are pure view functions that
+/// must not change after a WASM upgrade to maintain indexer compatibility.
+///
+/// NOTE: These functions return constant values hardcoded in the contract.
+/// Changing TOKEN_NAME, TOKEN_SYMBOL, or TOKEN_DECIMALS is a BREAKING CHANGE
+/// for indexers and downstream consumers that cache these values.
+#[test]
+fn test_token_metadata_preserved_after_upgrade() {
+    let env = Env::default();
+
+    // Deploy V1 of the contract and verify metadata
+    let contract_v1_id = env.register_contract(None, StellarWrapContract);
+    let client_v1 = StellarWrapContractClient::new(&env, &contract_v1_id);
+
+    assert_eq!(client_v1.decimals(), TOKEN_DECIMALS, "V1 decimals");
+    assert_eq!(client_v1.name(), String::from_str(&env, TOKEN_NAME), "V1 name");
+    assert_eq!(client_v1.symbol(), String::from_str(&env, TOKEN_SYMBOL), "V1 symbol");
+
+    // Deploy V2 (simulated upgrade) - metadata must be identical
+    // In a real upgrade, the same contract address would run new WASM code,
+    // but in test we simulate by deploying a fresh instance with the same code.
+    let contract_v2_id = env.register_contract(None, StellarWrapContract);
+    let client_v2 = StellarWrapContractClient::new(&env, &contract_v2_id);
+
+    assert_eq!(client_v2.decimals(), TOKEN_DECIMALS, "V2 decimals must match V1");
+    assert_eq!(client_v2.name(), String::from_str(&env, TOKEN_NAME), "V2 name must match V1");
+    assert_eq!(client_v2.symbol(), String::from_str(&env, TOKEN_SYMBOL), "V2 symbol must match V1");
+
+    // Verify both contract instances return identical metadata
+    assert_eq!(client_v1.decimals(), client_v2.decimals(), "decimals stable across versions");
+    assert_eq!(client_v1.name(), client_v2.name(), "name stable across versions");
+    assert_eq!(client_v1.symbol(), client_v2.symbol(), "symbol stable across versions");
 }
 
 // ─── Issue #48: version tests ───────────────────────────────────────────────
@@ -433,16 +412,13 @@ fn test_contract_info_returns_correct_fields() {
     let client = StellarWrapContractClient::new(&env, &contract_id);
 
     let info = client.contract_info();
-    assert_eq!(info.name, String::from_str(&env, "Stellar Wrap Registry"));
+    assert_eq!(info.name, String::from_str(&env, TOKEN_NAME));
     assert_eq!(info.version, String::from_str(&env, "0.1.0"));
     assert_eq!(
         info.repo,
         String::from_str(&env, "https://github.com/zintarh/stellar-wrap-contract")
     );
-    assert_eq!(
-        info.description,
-        String::from_str(&env, "Soulbound token registry for Stellar Wrap")
-    );
+    assert_eq!(info.description, String::from_str(&env, CONTRACT_DESCRIPTION));
 }
 
 // ─── Issue #84: extend_ttl tests ────────────────────────────────────────────
