@@ -1781,3 +1781,81 @@ fn test_admin_can_revoke_opted_out_wrap() {
     client.revoke_wrap(&user, &period);
     assert_eq!(client.balance_of(&user), 0);
 }
+
+// ─── Issue #73: archetype stats tests ────────────────────────────────────────
+
+#[test]
+fn test_archetype_count_increments_on_mint() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[90u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let archetype = symbol_short!("builder");
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    assert_eq!(client.archetype_count(&archetype), 0);
+
+    let period = 2026u64;
+    let hash = BytesN::from_array(&env, &[91u8; 32]);
+    let sig = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &hash,
+    );
+    client.mint_wrap(&user, &period, &archetype, &hash, &sig);
+
+    assert_eq!(client.archetype_count(&archetype), 1);
+}
+
+#[test]
+fn test_archetype_count_tracks_multiple_archetypes_independently() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[92u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+    let arch_a = symbol_short!("builder");
+    let arch_b = symbol_short!("defi");
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let hash = BytesN::from_array(&env, &[93u8; 32]);
+    let sig_a = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user_a,
+        202601,
+        &arch_a,
+        &hash,
+    );
+    let sig_b = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user_b,
+        202601,
+        &arch_b,
+        &hash,
+    );
+    client.mint_wrap(&user_a, &202601, &arch_a, &hash, &sig_a);
+    client.mint_wrap(&user_b, &202601, &arch_b, &hash, &sig_b);
+
+    assert_eq!(client.archetype_count(&arch_a), 1);
+    assert_eq!(client.archetype_count(&arch_b), 1);
+}

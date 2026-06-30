@@ -72,6 +72,8 @@ pub enum DataKey {
     MerkleClaimed(Address, u64),
     /// User privacy opt-out flag (persistent)
     UserOptOut(Address),
+    /// Global count of wraps minted with this archetype
+    ArchetypeCount(Symbol),
 }
 
 /// Current schema version written by `initialize()` and advanced by `migrate()`.

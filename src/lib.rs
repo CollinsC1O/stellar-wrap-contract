@@ -552,6 +552,15 @@ impl StellarWrapContract {
             .persistent()
             .extend_ttl(&streak_key, ttl_one_year, ttl_one_year);
 
+        let arch_key = DataKey::ArchetypeCount(archetype.clone());
+        let arch_count: u64 = e.storage().persistent().get(&arch_key).unwrap_or(0);
+        e.storage()
+            .persistent()
+            .set(&arch_key, &(arch_count + 1));
+        e.storage()
+            .persistent()
+            .extend_ttl(&arch_key, ttl_one_year, ttl_one_year);
+
         e.events()
             .publish((symbol_short!("mint"), user, period), archetype);
     }
@@ -813,6 +822,14 @@ impl StellarWrapContract {
         e.storage()
             .persistent()
             .get::<_, u32>(&DataKey::WrapStreak(user))
+            .unwrap_or(0)
+    }
+
+    /// Return the global number of wraps minted with `archetype`.
+    pub fn archetype_count(e: Env, archetype: Symbol) -> u64 {
+        e.storage()
+            .persistent()
+            .get(&DataKey::ArchetypeCount(archetype))
             .unwrap_or(0)
     }
 
