@@ -28,6 +28,8 @@ The codes are defined by the Rust `ContractError` enum in `src/lib.rs`.
 | 7 | `InvalidDataHash` | `data_hash` is all-zero bytes (missing/invalid data) | Passing `0x00…00` as `data_hash` | 1) Compute `data_hash = sha256(original_json_bytes)`.
 2) Ensure you don’t initialize `data_hash` with a zero placeholder.
 3) Validate the off-chain JSON bytes are the same bytes you intend to mint. |
+| 8 | `UserOptedOut` | The user has opted out of receiving future wraps | Calling `mint_wrap` or `mint_campaign_wrap` for an opted-out user | 1) Ask the user to call `opt_in()` to re-enable mints.
+2) Check opt-out status before attempting to mint. |
 
 ---
 
@@ -74,6 +76,11 @@ thread 'main' panicked at 'Error(Contract, #6)'
 thread 'main' panicked at 'Error(Contract, #7)'
 ```
 
+### Code 8 — `UserOptedOut`
+```text
+thread 'main' panicked at 'Error(Contract, #8)'
+```
+
 ---
 
 ## Payload & signing notes (for #6)
@@ -111,6 +118,7 @@ If your CLI/tooling shows a different wording around an Ed25519 verify failure, 
   - You’re not issuing concurrent/repeated invocations that trip the temporary mint guard.
 - If you see **`Error(Contract, #4)`**, check whether you already minted `(user, period)` with `get_wrap(user, period)`.
 - If you see **`Error(Contract, #5)`**, verify `period` matches the minted period exactly.
+- If you see **`Error(Contract, #8)`**, the user has opted out of receiving wraps. Ask them to call `opt_in()` to re-enable mints.
 
 ---
 
