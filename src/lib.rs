@@ -1,4 +1,6 @@
 
+use crate::constants::{TOKEN_NAME, TOKEN_SYMBOL, TOKEN_DECIMALS, CONTRACT_DESCRIPTION, VERSION};
+
 use soroban_sdk::{
 
 soroban_sdk::contractmeta!(
