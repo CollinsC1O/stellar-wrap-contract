@@ -1,5 +1,8 @@
 # Stellar Wrap - Smart Contract
 
+[![CI](https://github.com/jabir-dev788/stellar-wrap-contract/actions/workflows/ci.yml/badge.svg)](https://github.com/jabir-dev788/stellar-wrap-contract/actions/workflows/ci.yml)
+![Coverage](./coverage-badge.svg)
+
 > **The on-chain Soulbound Token (SBT) registry for Stellar Wrap. This contract stores non-transferable wrap records linked to user addresses, containing data hashes and persona archetypes.**
 
 This repository contains the **Soroban smart contract** that serves as the on-chain anchor for Stellar Wrap. For the full application (frontend, backend, etc.), see the main Stellar Wrap repository.
