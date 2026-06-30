@@ -125,7 +125,7 @@ fn test_balance_of_and_count() {
     env.mock_all_auths();
 
     let archetype = symbol_short!("soroban");
-    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let hash = BytesN::from_array(&env, &[42u8; 32]);
 
     let sig1 = sign_payload(
         &env,
@@ -715,4 +715,112 @@ fn test_get_admin_before_init_returns_none() {
     let client = StellarWrapContractClient::new(&env, &contract_id);
 
     assert!(client.get_admin().is_none());
+}
+
+// ─── Issue #55: data_hash edge-case tests ───────────────────────────────────
+
+/// Zero-filled data_hash must be rejected with InvalidDataHash (#6).
+/// An all-zero hash almost certainly means the caller forgot to hash real data
+/// and is passing a default/uninitialized value — the contract rejects it early.
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_zero_data_hash_rejected() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[20u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    // All-zero hash — explicitly invalid per contract rules
+    let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let archetype = symbol_short!("arch");
+    let period = 2025u64;
+
+    let signature = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        period,
+        &archetype,
+        &zero_hash,
+    );
+
+    // Must panic with ContractError::InvalidDataHash (#6)
+    client.mint_wrap(&user, &period, &archetype, &zero_hash, &signature);
+}
+
+/// Non-zero edge-case hashes that look "almost zero" must still be accepted.
+/// This guards against an overly broad rejection that would block legitimate hashes
+/// such as all-ones ([0xFF; 32]) or a hash where only the first byte is non-zero.
+#[test]
+fn test_near_zero_data_hashes_are_accepted() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, StellarWrapContract);
+    let client = StellarWrapContractClient::new(&env, &contract_id);
+
+    let signing_key = SigningKey::from_bytes(&[21u8; 32]);
+    let admin_pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &admin_pubkey);
+    env.mock_all_auths();
+
+    let archetype = symbol_short!("arch");
+
+    // Case 1: all-ones (0xFF) — max-value hash, should be accepted
+    let all_ones_hash = BytesN::from_array(&env, &[0xFFu8; 32]);
+    let sig1 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        2025u64,
+        &archetype,
+        &all_ones_hash,
+    );
+    client.mint_wrap(&user, &2025u64, &archetype, &all_ones_hash, &sig1);
+    let wrap1 = client.get_wrap(&user, &2025u64).unwrap();
+    assert_eq!(wrap1.data_hash, all_ones_hash);
+
+    // Case 2: only the first byte is non-zero, rest are zero — still non-zero overall
+    let mut almost_zero_bytes = [0u8; 32];
+    almost_zero_bytes[0] = 0x01;
+    let almost_zero_hash = BytesN::from_array(&env, &almost_zero_bytes);
+    let sig2 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        2026u64,
+        &archetype,
+        &almost_zero_hash,
+    );
+    client.mint_wrap(&user, &2026u64, &archetype, &almost_zero_hash, &sig2);
+    let wrap2 = client.get_wrap(&user, &2026u64).unwrap();
+    assert_eq!(wrap2.data_hash, almost_zero_hash);
+
+    // Case 3: only the last byte is non-zero
+    let mut last_byte_hash_bytes = [0u8; 32];
+    last_byte_hash_bytes[31] = 0x01;
+    let last_byte_hash = BytesN::from_array(&env, &last_byte_hash_bytes);
+    let sig3 = sign_payload(
+        &env,
+        &signing_key,
+        &contract_id,
+        &user,
+        2027u64,
+        &archetype,
+        &last_byte_hash,
+    );
+    client.mint_wrap(&user, &2027u64, &archetype, &last_byte_hash, &sig3);
+    let wrap3 = client.get_wrap(&user, &2027u64).unwrap();
+    assert_eq!(wrap3.data_hash, last_byte_hash);
 }

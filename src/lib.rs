@@ -17,6 +17,9 @@ pub enum ContractError {
     Unauthorized = 3,
     WrapAlreadyExists = 4,
     InvalidSignature = 5,
+    /// data_hash is all zeros, which almost certainly means the caller forgot
+    /// to hash real data. Reject early rather than store a meaningless record.
+    InvalidDataHash = 6,
 }
 
 #[contract]
@@ -58,6 +61,12 @@ impl StellarWrapContract {
     ) {
         // 1. Security: Ensure the user actually signed this transaction
         user.require_auth();
+
+        // 1b. Reject all-zero data_hash — this almost always means the caller
+        //     forgot to hash real data and is passing a default/uninitialized value.
+        if data_hash == BytesN::from_array(&e, &[0u8; 32]) {
+            panic_with_error!(e, ContractError::InvalidDataHash);
+        }
 
         // 2. Verify initialization
         let admin_pubkey: BytesN<32> = e

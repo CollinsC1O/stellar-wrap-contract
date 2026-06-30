@@ -431,7 +431,8 @@ fn test_gas_analysis_multiple_mints() {
 
     // Perform 5 mints for different periods
     for i in 0..5 {
-        let data_hash = BytesN::from_array(&env, &[i as u8; 32]);
+        // Start from 1 so no iteration produces an all-zero hash (which is now invalid)
+        let data_hash = BytesN::from_array(&env, &[(i + 1) as u8; 32]);
         let archetype = symbol_short!("architect");
 
         // Create unique period values
