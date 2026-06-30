@@ -1,4 +1,15 @@
-use soroban_sdk::{contracttype, Address, BytesN, String, Symbol};
+
+use crate::constants::HASH_PREVIEW_BYTES;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractStats {
+    pub total_mints: u64,
+    pub admin: Option<Address>,
+    pub is_initialized: bool,
+    pub last_mint_timestamp: Option<u64>,
+    pub schema_version: u32,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,12 +32,21 @@ pub struct WrapRecordV1 {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WrapRecordV2 {
+    pub timestamp: u64,
+    pub data_hash: BytesN<32>,
+    pub archetype: Symbol,
+    pub period: u64,
+    pub image_uri: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WrapRecord {
     pub timestamp: u64,
     pub data_hash: BytesN<32>,
     pub archetype: Symbol,
-    pub period: u64, // Standardized to u64 for better indexing/sorting
-    /// Optional off-chain image URI (schema v2+). Empty for legacy records.
+    pub period: WrapPeriod,
     pub image_uri: String,
 }
 
@@ -39,22 +59,6 @@ pub enum DataKey {
     AdminPubKey,
     /// Current storage schema version (instance storage)
     SchemaVersion,
-
-    // ─── Storage deposit / DoS protection ────────────────────────────────
-    /// Global storage budget (in arbitrary “deposit units”).
-    /// When the contract’s total charged units exceed this value, further
-    /// persistent writes that would increase deposits are rejected.
-    StorageBudgetTotal,
-
-    /// Per-user storage budget (in arbitrary “deposit units”).
-    StorageBudgetPerUser,
-
-    /// Tracks total charged deposit units for the contract.
-    StorageDepositTotalUsed,
-
-    /// Tracks charged deposit units for a specific user.
-    StorageDepositUsed(Address),
-
     /// Stores individual WrapRecords (mapped by User and Period)
     /// Using u64 for period ensures consistent indexing
     Wrap(Address, u64),
@@ -62,16 +66,24 @@ pub enum DataKey {
     WrapCount(Address),
     /// Tracks the latest (highest) period minted for a user
     LatestPeriod(Address),
-    /// Tracks the current consecutive wrap streak for a user
-    WrapStreak(Address),
     /// Temporary, invocation-scoped reentrancy guard for mint flow
     MintGuard(Address),
+    /// Global counter of currently active (non-revoked) minted wraps
+    TotalMints,
+    /// Ledger timestamp of the most recent successful mint
+    LastMintTimestamp,
+    /// Schema version set at initialization; bumped on breaking storage migrations
+    SchemaVersion,
     /// Merkle root for batch claims per period
     MerkleRoot(u64),
     /// Tracks whether a user has claimed via merkle for a period
     MerkleClaimed(Address, u64),
     /// User privacy opt-out flag (persistent)
     UserOptOut(Address),
+    /// Registered delegate address → Ed25519 public key for mint signatures
+    Delegate(Address),
+    /// Ordered list of registered delegate addresses (instance storage)
+    DelegateList,
     /// Global count of wraps minted with this archetype
     ArchetypeCount(Symbol),
 }
@@ -80,4 +92,3 @@ pub enum DataKey {
 pub const SCHEMA_VERSION: u32 = 1;
 /// Target schema version after v1 → v2 migration (`image_uri` field).
 pub const SCHEMA_VERSION_V2: u32 = 2;
-
