@@ -269,6 +269,8 @@ sequenceDiagram
 - `mint_wrap(e, user, period, archetype, data_hash, signature)`
 - `update_wrap(e, user, period, new_data_hash, new_archetype, signature)`
 - `revoke_wrap(e, user, period)`
+- `opt_out(e, user)` — requires user auth; prevents future mints
+- `opt_in(e, user)` — requires user auth; re-enables future mints
 - `get_wrap(e, user, period)`
 - `balance_of(e, id)`
 - `verify_data(e, user, period, data)`
@@ -290,6 +292,7 @@ sequenceDiagram
 - `WrapCount(Address)`
 - `LatestPeriod(Address)`
 - `MintGuard(Address)`
+- `UserOptOut(Address)`
 
 #### `WrapRecord` fields
 - `timestamp: u64`
@@ -315,6 +318,8 @@ sequenceDiagram
 - `mint_wrap(e, user, period, archetype, data_hash, signature)`
 - `update_wrap(e, user, period, new_data_hash, new_archetype, signature)`
 - `revoke_wrap(e, user, period)`
+- `opt_out(e, user)` — requires user auth; prevents future mints
+- `opt_in(e, user)` — requires user auth; re-enables future mints
 - `get_wrap(e, user, period)`
 - `balance_of(e, id)`
 - `verify_data(e, user, period, data)`

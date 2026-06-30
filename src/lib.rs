@@ -28,6 +28,10 @@ pub enum ContractError {
     InvalidSignature = 6,
     /// `data_hash` is all-zero bytes, which indicates missing or invalid data. (code 7)
     InvalidDataHash = 7,
+    /// The user has opted out of receiving wraps. (code 8)
+    UserOptedOut = 8,
+}
+
 #[contract]
 pub struct StellarWrapContract;
 
@@ -104,6 +108,51 @@ impl StellarWrapContract {
         );
     }
 
+    /// Opt out of receiving future wraps.
+    ///
+    /// Once opted out, any `mint_wrap` or `mint_campaign_wrap` call for this user
+    /// will be rejected with `UserOptedOut`. The opt-out only affects future mints;
+    /// existing wrap records remain on-chain.
+    ///
+    /// # Authorization
+    /// Requires authorization from `user`.
+    ///
+    /// # Panics
+    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
+    pub fn opt_out(e: Env, user: Address) {
+        if !e.storage().instance().has(&DataKey::Admin) {
+            panic_with_error!(e, ContractError::NotInitialized);
+        }
+        user.require_auth();
+        e.storage().persistent().set(&DataKey::UserOptOut(user.clone()), &true);
+        e.events().publish(
+            (symbol_short!("opt_out"), user),
+            true,
+        );
+    }
+
+    /// Opt back in to receiving wraps after having opted out.
+    ///
+    /// Removes the opt-out flag so future `mint_wrap` and `mint_campaign_wrap`
+    /// calls will succeed again.
+    ///
+    /// # Authorization
+    /// Requires authorization from `user`.
+    ///
+    /// # Panics
+    /// - [`ContractError::NotInitialized`] if the contract has not been initialized.
+    pub fn opt_in(e: Env, user: Address) {
+        if !e.storage().instance().has(&DataKey::Admin) {
+            panic_with_error!(e, ContractError::NotInitialized);
+        }
+        user.require_auth();
+        e.storage().persistent().remove(&DataKey::UserOptOut(user.clone()));
+        e.events().publish(
+            (symbol_short!("opt_in"), user),
+            false,
+        );
+    }
+
     /// Mint a soulbound wrap record for a user.
     ///
     /// The backend generates a payload of
@@ -151,6 +200,11 @@ impl StellarWrapContract {
         signature: BytesN<64>,
     ) {
         user.require_auth();
+
+        // Check if user has opted out of receiving wraps
+        if Self::user_is_opted_out(&e, &user) {
+            panic_with_error!(e, ContractError::UserOptedOut);
+        }
 
         // 1b. Reentrancy guard in temporary storage.
         // If execution panics, the temporary TTL naturally clears stale entries.
@@ -237,6 +291,11 @@ impl StellarWrapContract {
         }
 
         user.require_auth();
+
+        // Check if user has opted out of receiving wraps
+        if Self::user_is_opted_out(&e, &user) {
+            panic_with_error!(e, ContractError::UserOptedOut);
+        }
 
         let guard_key = DataKey::MintGuard(user.clone());
         if e.storage().temporary().has(&guard_key) {
