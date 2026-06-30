@@ -316,6 +316,86 @@ cargo test -- --nocapture --test-threads=1
 
 ---
 
+## 🔒 Issue #31: One-Signature-Per-Period Invariant
+
+### Overview
+
+The duplicate check in `mint_wrap` uses `DataKey::Wrap(user, period)` as the deduplication key.
+This means:
+
+- Once a user successfully mints for a given period, **no further mint for that period is ever
+  accepted**, regardless of the archetype or data hash carried in the new call.
+- A signature for `(user, period, archetype_A)` and a second signature for
+  `(user, period, archetype_B)` cannot both be consumed — the first one to land wins, and the
+  second becomes permanently orphaned.
+
+### The Invariant
+
+> **The admin backend MUST issue exactly one signature per `(user, period)` pair.**
+
+This is an off-chain operational invariant, not enforced by the contract. The contract enforces
+that at most one record can be stored per `(user, period)`, but it cannot prevent the backend from
+accidentally generating multiple valid signatures before the first is consumed.
+
+### Why Orphaned Signatures Are a Liability
+
+If two valid signatures for the same `(user, period)` exist but only one can ever be used:
+
+1. **Upgrade risk:** If contract logic changes (e.g., the deduplication key is widened or the
+   archetype is added to the storage key), the previously orphaned signature becomes usable and
+   could write an unexpected record.
+2. **Information leakage:** A second signature reveals that the admin considered a different
+   archetype for the user, which may be undesirable.
+3. **Key rotation edge cases:** If the admin key is rotated and old signatures are not explicitly
+   revoked, orphaned signatures from the old key remain valid until the key is removed.
+
+### Mitigation Options
+
+#### Adopted: Document and Enforce Off-Chain
+
+The simplest and currently adopted approach is to **document this invariant here** and ensure the
+backend service guarantees it:
+
+- Compute and sign exactly one `(user, period, archetype, data_hash)` tuple per period.
+- Never re-sign with a different archetype if a signature has already been issued for that period.
+- Maintain an idempotency log: if a period is requested again, return the existing signature, never
+  generate a new one.
+
+#### Optional: Nonce-Based Replay Protection
+
+For stronger guarantees a nonce can be added to the signed payload and stored on-chain:
+
+```rust
+// In DataKey:
+NonceUsed(Address, u64),   // user + period → bool
+
+// In mint_wrap, after signature verification:
+let nonce_key = DataKey::NonceUsed(user.clone(), period);
+if e.storage().persistent().has(&nonce_key) {
+    panic_with_error!(e, ContractError::WrapAlreadyExists);
+}
+e.storage().persistent().set(&nonce_key, &true);
+```
+
+This is redundant with the existing `Wrap(user, period)` key check for the current storage schema,
+but becomes valuable if the schema ever changes to allow multiple records per period.
+
+#### Optional: Include Archetype in the Storage Key
+
+If the design goal ever changes to allow one wrap per `(user, period, archetype)` triple, update
+`DataKey::Wrap` to `DataKey::Wrap(Address, u64, Symbol)`. This would make every archetype-specific
+signature independently consumable, but would also allow a user to mint multiple records for the
+same period, which contradicts the SBT one-record-per-period model.
+
+### Current Status
+
+- ✅ At most one record per `(user, period)` — enforced on-chain.
+- ✅ Cross-contract replay protection — contract address is included in the signed payload.
+- ✅ Cross-period replay protection — period is included in the signed payload.
+- ⚙️  One-signature-per-period — enforced **off-chain** by the backend (documented invariant).
+
+---
+
 ## 📚 Additional Security Best Practices
 
 ### Invariant Testing
