@@ -807,6 +807,14 @@ impl StellarWrapContract {
             .unwrap_or(0)
     }
 
+    /// Return the global number of wraps minted with `archetype`.
+    pub fn archetype_count(e: Env, archetype: Symbol) -> u64 {
+        e.storage()
+            .persistent()
+            .get(&DataKey::ArchetypeCount(archetype))
+            .unwrap_or(0)
+    }
+
     /// Return the current admin address, or `None` if the contract is not yet initialized.
     pub fn get_admin(e: Env) -> Option<Address> {
         e.storage().instance().get(&DataKey::Admin)
