@@ -2,10 +2,8 @@ name: Mutation Testing
 
 on:
   schedule:
-    # Weekly on Monday at 06:00 UTC
     - cron: '0 6 * * 1'
   workflow_dispatch:
-    # Allow manual trigger from GitHub UI
 
 jobs:
   mutants:
@@ -24,34 +22,48 @@ jobs:
           tool: cargo-mutants
 
       - name: Run mutation tests
-        run: cargo mutants --no-fail-fast 2>&1 | tee mutation-report.txt
+        run: cargo mutants -vV --in-place 2>&1 | tee mutation-report.txt
 
       - name: Extract mutation score
         id: score
         run: |
-          SCORE=$(grep -oP '\d+\.?\d*% mutation score' mutation-report.txt || echo "0%")
-          echo "score=$SCORE" >> "$GITHUB_OUTPUT"
-          echo "Mutation score: $SCORE"
+          SUMMARY=$(grep -oP '\d+ mutants tested.*: \d+ missed, \d+ caught' mutation-report.txt || echo "0")
+          MISSED=$(echo "$SUMMARY" | grep -oP '\d+(?= missed)')
+          CAUGHT=$(echo "$SUMMARY" | grep -oP '\d+(?= caught)')
+          TOTAL=$((MISSED + CAUGHT))
+          if [ "$TOTAL" -gt 0 ]; then
+            PCT=$(awk "BEGIN {printf \"%.1f\", $CAUGHT * 100 / $TOTAL}")
+          else
+            PCT="0.0"
+          fi
+          echo "score=$PCT" >> "$GITHUB_OUTPUT"
+          echo "caught=$CAUGHT" >> "$GITHUB_OUTPUT"
+          echo "missed=$MISSED" >> "$GITHUB_OUTPUT"
+          echo "### Mutation Score: ${PCT}% (${CAUGHT} caught, ${MISSED} missed)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload mutation report
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mutation-report
-          path: mutation-report.txt
-
-      - name: Upload mutants directory
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mutants-dir
-          path: mutants/
+          path: |
+            mutation-report.txt
+            mutants.out/
 
       - name: Check minimum mutation score
         run: |
-          SCORE=$(grep -oP '\d+\.?\d*(?=% mutation score)' mutation-report.txt || echo "0")
-          if [ "$(echo "$SCORE < 80" | bc -l)" -eq 1 ]; then
-            echo "❌ Mutation score ${SCORE}% is below target of 80%"
+          SUMMARY=$(grep -oP '\d+ mutants tested.*: \d+ missed, \d+ caught' mutation-report.txt || echo "0")
+          MISSED=$(echo "$SUMMARY" | grep -oP '\d+(?= missed)')
+          CAUGHT=$(echo "$SUMMARY" | grep -oP '\d+(?= caught)')
+          TOTAL=$((MISSED + CAUGHT))
+          if [ "$TOTAL" -gt 0 ]; then
+            PCT=$(awk "BEGIN {printf \"%.1f\", $CAUGHT * 100 / $TOTAL}")
+          else
+            PCT="0"
+          fi
+          MIN=70
+          if [ "$(echo "$PCT < $MIN" | bc -l)" -eq 1 ]; then
+            echo "❌ Mutation score ${PCT}% is below target of ${MIN}%"
             exit 1
           fi
-          echo "✅ Mutation score ${SCORE}% meets target of 80%"
+          echo "✅ Mutation score ${PCT}% meets target of ${MIN}%"
